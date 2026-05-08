@@ -16,6 +16,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { GraphCanvas } from './components/GraphCanvas';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ProjectFile, GraphNode, GraphLink, ProjectData, TreeNode } from './types';
 import { getExtension, findDependencies, shouldProcessFile, buildFileTree, generateTreeText, calculateAAMetrics } from './utils/analysis';
 import { GoogleGenAI } from "@google/genai";
@@ -646,16 +647,18 @@ ${context}`,
 
         {/* Graph Display */}
         <div className="flex-1 relative">
-           <GraphCanvas 
-             nodes={filteredNodes} 
-             links={projectData.links} 
-             onNodeClick={(node) => {
-               setSelectedNode(node);
-               setShowFileModal(true);
-             }}
-             selectedNodeId={selectedNode?.id || null}
-             isFocusMode={isFocusMode}
-           />
+           <ErrorBoundary category="Grafo Interactivo">
+             <GraphCanvas 
+               nodes={filteredNodes} 
+               links={projectData.links} 
+               onNodeClick={(node) => {
+                 setSelectedNode(node);
+                 setShowFileModal(true);
+               }}
+               selectedNodeId={selectedNode?.id || null}
+               isFocusMode={isFocusMode}
+             />
+           </ErrorBoundary>
            
            {/* Graph Overlay UI */}
            <div className="absolute bottom-6 left-6 flex flex-col gap-2">
