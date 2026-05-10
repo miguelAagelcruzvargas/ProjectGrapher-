@@ -128,8 +128,8 @@ const GraphCanvasComponent: React.FC<GraphCanvasProps> = ({ nodes, links, onNode
         }))
       .force('charge', d3.forceManyBody().strength(isPhone ? -180 : isCompact ? -260 : isTablet ? -340 : -600))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('x', d3.forceX((d) => clusterTargets.get(d.cluster || 'root')?.x ?? width / 2).strength(isPhone ? 0.36 : isCompact ? 0.3 : isTablet ? 0.22 : 0.12))
-      .force('y', d3.forceY((d) => clusterTargets.get(d.cluster || 'root')?.y ?? height / 2).strength(isPhone ? 0.32 : isCompact ? 0.28 : isTablet ? 0.2 : 0.12))
+      .force('x', d3.forceX((d) => clusterTargets.get((d as GraphNode).cluster || 'root')?.x ?? width / 2).strength(isPhone ? 0.36 : isCompact ? 0.3 : isTablet ? 0.22 : 0.12))
+      .force('y', d3.forceY((d) => clusterTargets.get((d as GraphNode).cluster || 'root')?.y ?? height / 2).strength(isPhone ? 0.32 : isCompact ? 0.28 : isTablet ? 0.2 : 0.12))
       .force('radial', d3.forceRadial(0, width / 2, height / 2).strength(d => {
         return (d as GraphNode).data.importance > 10 ? (isPhone ? 0.05 : isCompact ? 0.07 : 0.1) : 0.008;
       }))

@@ -82,6 +82,30 @@ type AgentTaskPackData = {
   implementationFocus: string[];
 };
 
+type ErrorContextFileCandidate = {
+  path: string;
+  nodeId: string;
+  importance: number;
+  score: number;
+  reasons: string[];
+  relation: 'origin' | 'neighbor' | 'entry' | 'hotspot';
+};
+
+type ErrorContextPackData = {
+  rawError: string;
+  errorHeadline: string;
+  summary: string;
+  projectName: string;
+  stack: string[];
+  stackPaths: string[];
+  matchedSignals: string[];
+  probableOrigin: ErrorContextFileCandidate | null;
+  relatedFiles: ErrorContextFileCandidate[];
+  readingOrder: string[];
+  implementationFocus: string[];
+  modelPrompt: string;
+};
+
 const getTopItems = (items: string[], limit: number) =>
   items.filter(Boolean).slice(0, limit).join(', ') || 'N/A';
 
@@ -206,6 +230,98 @@ const withProjectRoot = (projectName: string, path: string) => {
 const formatProjectPaths = (projectName: string, items: string[]) =>
   items.filter(Boolean).map((item) => withProjectRoot(projectName, item));
 
+const detectTechStackSignals = (file: ProjectFile) => {
+  const code = file.content.toLowerCase();
+  const path = file.path.toLowerCase();
+  const ext = file.ext.toLowerCase();
+
+  const stack = new Set<string>();
+  const databases = new Set<string>();
+  const runtime = new Set<string>();
+  const ui = new Set<string>();
+
+  if (code.includes('react')) stack.add('React');
+  if (code.includes('@angular/') || code.includes('angular.json') || code.includes('@component(')) stack.add('Angular');
+  if (code.includes('next/') || code.includes('next.config')) stack.add('Next.js');
+  if (code.includes('vue')) stack.add('Vue');
+  if (code.includes('nuxt')) stack.add('Nuxt');
+  if (code.includes('svelte')) stack.add('Svelte');
+  if (code.includes('vite')) stack.add('Vite');
+  if (code.includes('fastapi')) stack.add('FastAPI');
+  if (code.includes('flask')) stack.add('Flask');
+  if (code.includes('django')) stack.add('Django');
+  if (code.includes('express')) stack.add('Express.js');
+  if (code.includes('@nestjs/') || code.includes('nestfactory')) stack.add('NestJS');
+  if (code.includes('tailwind')) stack.add('Tailwind CSS');
+  if (ext === '.scss' || ext === '.sass' || code.includes('@mixin') || code.includes('$')) stack.add('SCSS/Sass');
+  if (ext === '.css') stack.add('CSS');
+  if (ext === '.html') stack.add('HTML');
+  if (ext === '.ts' || ext === '.tsx' || code.includes('typescript')) stack.add('TypeScript');
+  if (ext === '.js' || ext === '.jsx') stack.add('JavaScript');
+  if (ext === '.py') stack.add('Python');
+  if (ext === '.cs' || code.includes('using system') || code.includes('<project sdk=')) stack.add('C#');
+  if (ext === '.cs' || code.includes('asp.net') || code.includes('microsoft.aspnetcore')) stack.add('.NET / ASP.NET');
+  if (code.includes('zustand')) stack.add('Zustand');
+  if (code.includes('redux')) stack.add('Redux');
+  if (code.includes('dexie')) stack.add('Dexie');
+  if (code.includes('firebase')) stack.add('Firebase');
+  if (code.includes('socket.io') || code.includes('websocket')) stack.add('WebSockets');
+  if (code.includes('vite-plugin-pwa') || code.includes('manifest')) stack.add('PWA');
+
+  if (code.includes('prisma')) databases.add('Prisma');
+  if (code.includes('mongoose')) databases.add('MongoDB/Mongoose');
+  if (code.includes('sequelize')) databases.add('Sequelize');
+  if (code.includes('typeorm')) databases.add('TypeORM');
+  if (code.includes('dexie') || code.includes('indexeddb')) databases.add('IndexedDB');
+  if (code.includes('sqlite')) databases.add('SQLite');
+  if (code.includes('postgres')) databases.add('PostgreSQL');
+  if (code.includes('mysql')) databases.add('MySQL');
+  if (code.includes('sqlserver') || code.includes('entityframework')) databases.add('SQL Server');
+
+  if (code.includes('fastapi') || code.includes('flask') || code.includes('django')) runtime.add('Backend Python');
+  if (code.includes('express') || code.includes('@nestjs/')) runtime.add('Backend Node');
+  if (ext === '.cs' || code.includes('microsoft.aspnetcore')) runtime.add('Backend .NET');
+  if (code.includes('worker') || path.includes('worker')) runtime.add('Background Worker');
+
+  if (['.tsx', '.jsx', '.vue', '.svelte'].includes(ext) || code.includes('@angular/')) ui.add('SPA Frontend');
+  if (ext === '.html' || ext === '.css' || ext === '.scss' || ext === '.sass') ui.add('Web UI');
+
+  return {
+    stack: Array.from(stack),
+    databases: Array.from(databases),
+    runtime: Array.from(runtime),
+    ui: Array.from(ui)
+  };
+};
+
+const normalizeComparablePath = (value: string) =>
+  normalizeTaskToken(value)
+    .replace(/\\/g, '/')
+    .replace(/^[a-z]:\//, '')
+    .replace(/^\/+/, '')
+    .replace(/^\.\/+/, '')
+    .replace(/\/+/g, '/');
+
+const stripLineSuffix = (value: string) => value.replace(/:\d+(?::\d+)?$/, '');
+
+const getPathBasename = (value: string) => {
+  const normalized = normalizeComparablePath(stripLineSuffix(value));
+  const parts = normalized.split('/').filter(Boolean);
+  return parts[parts.length - 1] || normalized;
+};
+
+const uniqueStrings = (items: string[]) => Array.from(new Set(items.filter(Boolean)));
+
+const extractStackPathHints = (errorText: string) => {
+  const matches = errorText.match(/(?:[A-Za-z]:)?[^\s()'"`]+?\.(?:tsx?|jsx?|py|go|java|cs|php|rb|rs|vue|svelte|html|css|scss|json)(?::\d+(?::\d+)?)?/g) || [];
+  return uniqueStrings(
+    matches
+      .map((match) => stripLineSuffix(match.trim().replace(/[),.;]+$/, '')))
+      .map((match) => normalizeComparablePath(match))
+      .filter((match) => match.length > 2)
+  );
+};
+
 const extractAIHighlights = (aiReview: string | null, limit = 6) => {
   if (!aiReview) return [];
 
@@ -318,19 +434,10 @@ const extractProjectInsights = (projectData: ProjectData, projectName: string): 
   });
 
   projectData.files.forEach((file) => {
-    const code = file.content.toLowerCase();
+    const signals = detectTechStackSignals(file);
     fileExtCount.set(file.ext || 'no-ext', (fileExtCount.get(file.ext || 'no-ext') || 0) + 1);
 
-    if (code.includes('react')) stack.add('React');
-    if (code.includes('vite')) stack.add('Vite');
-    if (code.includes('fastapi')) stack.add('FastAPI');
-    if (code.includes('express')) stack.add('Express.js');
-    if (code.includes('tailwind')) stack.add('Tailwind CSS');
-    if (code.includes('zustand')) stack.add('Zustand');
-    if (code.includes('dexie')) stack.add('Dexie');
-    if (code.includes('firebase')) stack.add('Firebase');
-    if (code.includes('socket.io')) stack.add('WebSockets');
-    if (code.includes('vite-plugin-pwa') || code.includes('manifest')) stack.add('PWA');
+    signals.stack.forEach((item) => stack.add(item));
 
     const parts = file.path.split('/');
     if (parts.length > 1) directories.add(parts[0]);
@@ -732,6 +839,252 @@ const buildTaskPack = (projectData: ProjectData, insights: ProjectInsights, task
   return text;
 };
 
+const buildErrorContextPackData = (projectData: ProjectData, insights: ProjectInsights, rawErrorInput: string): ErrorContextPackData => {
+  const rootPath = (path: string) => withProjectRoot(insights.projectName, path);
+  const rawError = rawErrorInput.trim() || 'Error no especificado. Pega aquí el mensaje o stack trace para generar contexto.';
+  const errorHeadline = rawError
+    .split('\n')
+    .map((line) => line.trim())
+    .find(Boolean)
+    ?.slice(0, 180) || 'Error no especificado';
+
+  const stackPaths = extractStackPathHints(rawError);
+  const stackBasenames = uniqueStrings(stackPaths.map((item) => getPathBasename(item)));
+  const baseTerms = tokenizeTask(rawError);
+  const expandedTerms = uniqueStrings(expandTaskTerms([...baseTerms, ...stackBasenames.map((item) => item.replace(/\.[^.]+$/, ''))]));
+  const matchedSignals = uniqueStrings([
+    ...stackPaths.map((item) => `stack:${item}`),
+    ...expandedTerms.slice(0, 10).map((item) => `term:${item}`)
+  ]);
+
+  const scoredFiles = projectData.files.map((file) => {
+    const comparablePath = normalizeComparablePath(file.path);
+    const comparableName = normalizeComparablePath(file.name);
+    const lowerContent = normalizeTaskToken(file.content);
+    const roleHints = getFileRoleHints(file);
+    let score = Math.min(file.importance || 0, 10);
+    const reasons = new Set<string>();
+
+    const directPathMatches = stackPaths.filter((hint) =>
+      comparablePath === hint ||
+      comparablePath.endsWith(`/${hint}`) ||
+      hint.endsWith(`/${comparablePath}`)
+    );
+
+    const basenameMatches = stackBasenames.filter((basename) => comparableName === basename);
+
+    if (directPathMatches.length) {
+      score += 42 + (directPathMatches.length - 1) * 6;
+      reasons.add(`El stack trace apunta directamente a ${directPathMatches[0]}`);
+    } else if (basenameMatches.length) {
+      score += 28;
+      reasons.add(`El nombre del archivo coincide con el stack trace (${basenameMatches[0]})`);
+    }
+
+    expandedTerms.forEach((term) => {
+      const pathMatch = scoreTermMatch(comparablePath, term);
+      const nameMatch = scoreTermMatch(comparableName, term);
+      if (nameMatch > 0) {
+        score += Math.round(10 * nameMatch);
+        reasons.add(`El archivo se alinea con la señal "${term}"`);
+      }
+      if (pathMatch > 0) {
+        score += Math.round(8 * pathMatch);
+        reasons.add(`La ruta sugiere relación con "${term}"`);
+      }
+      if (term.length >= 5 && lowerContent.includes(term)) {
+        score += 1;
+      }
+    });
+
+    if (roleHints.isHook) {
+      score += 4;
+      reasons.add('Puede encapsular la lógica donde explotó el flujo');
+    }
+
+    if (roleHints.isContext || roleHints.isStore) {
+      score += 4;
+      reasons.add('Puede propagar estado que explique el error');
+    }
+
+    if (roleHints.isApi || roleHints.isBackend) {
+      score += 3;
+      reasons.add('Puede estar involucrado en la integración o respuesta que detonó la falla');
+    }
+
+    if (insights.entryPoints.includes(file.path)) {
+      score += 2;
+      reasons.add('Es un entry point útil para reconstruir el flujo');
+    }
+
+    if ((file.importance || 0) >= 7) {
+      score += 3;
+      reasons.add(`Es un hotspot arquitectónico (${file.importance || 0})`);
+    }
+
+    return {
+      file,
+      score,
+      reasons: Array.from(reasons)
+    };
+  });
+
+  const rankedFiles = scoredFiles.sort((a, b) => b.score - a.score);
+  const bestMatch = rankedFiles[0];
+  const probableOrigin: ErrorContextFileCandidate | null = bestMatch
+    ? {
+        path: rootPath(bestMatch.file.path),
+        nodeId: bestMatch.file.id,
+        importance: bestMatch.file.importance || 0,
+        score: bestMatch.score,
+        reasons: bestMatch.reasons.slice(0, 4).length ? bestMatch.reasons.slice(0, 4) : ['Archivo priorizado por relevancia estructural'],
+        relation: stackPaths.length || expandedTerms.length ? 'origin' : 'hotspot'
+      }
+    : null;
+
+  const relatedFiles: ErrorContextFileCandidate[] = [];
+  if (probableOrigin) {
+    const neighborMap = new Map<string, ErrorContextFileCandidate>();
+    projectData.links.forEach((link) => {
+      const sourceId = typeof link.source === 'object' ? (link.source as any).id : link.source;
+      const targetId = typeof link.target === 'object' ? (link.target as any).id : link.target;
+      let neighborId: string | null = null;
+
+      if (sourceId === probableOrigin.nodeId && targetId !== probableOrigin.nodeId) neighborId = targetId;
+      if (targetId === probableOrigin.nodeId && sourceId !== probableOrigin.nodeId) neighborId = sourceId;
+      if (!neighborId) return;
+
+      const neighborFile = projectData.files.find((file) => file.id === neighborId);
+      if (!neighborFile) return;
+
+      const roleHints = getFileRoleHints(neighborFile);
+      const reasons = ['Está conectado en el grafo con el archivo origen probable'];
+      let score = neighborFile.importance || 0;
+
+      if (roleHints.isApi) {
+        score += 4;
+        reasons.push('Puede intervenir en la capa de integración');
+      }
+      if (roleHints.isContext || roleHints.isStore) {
+        score += 4;
+        reasons.push('Puede propagar estado o contexto relacionado');
+      }
+      if (roleHints.isHook) {
+        score += 3;
+        reasons.push('Puede encapsular el comportamiento donde se disparó la falla');
+      }
+      if (roleHints.isEntryLike) {
+        score += 2;
+        reasons.push('Ayuda a reconstruir el flujo desde el punto de entrada');
+      }
+
+      neighborMap.set(neighborId, {
+        path: rootPath(neighborFile.path),
+        nodeId: neighborFile.id,
+        importance: neighborFile.importance || 0,
+        score,
+        reasons,
+        relation: 'neighbor'
+      });
+    });
+
+    relatedFiles.push(
+      ...Array.from(neighborMap.values())
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 8)
+    );
+  }
+
+  const readingOrder = uniqueStrings([
+    probableOrigin?.path || '',
+    ...relatedFiles.slice(0, 4).map((item) => item.path),
+    ...formatProjectPaths(insights.projectName, insights.entryPoints.slice(0, 3))
+  ]);
+
+  const implementationFocus = [
+    'Empieza por el archivo origen probable y confirma si el stack trace realmente cae ahí o si solo es el último nodo visible.',
+    'Después sigue los vecinos del grafo para revisar dependencias, hooks, stores o servicios que alimentan ese punto.',
+    stackPaths.length
+      ? `Usa estas rutas detectadas como pista fuerte: ${stackPaths.slice(0, 4).join(', ')}.`
+      : 'No se detectó una ruta fuerte en el stack; apóyate más en el mensaje del error y en los hotspots conectados.',
+    expandedTerms.length
+      ? `Señales semánticas detectadas: ${expandedTerms.slice(0, 8).join(', ')}. Úsalas para filtrar archivos y validar supuestos.`
+      : 'Si el mensaje es muy genérico, vuelve a pegar el stack completo para mejorar la precisión del pack.'
+  ];
+
+  const summary = probableOrigin
+    ? `ProjectGrapher detectó como origen probable ${probableOrigin.path} y encontró ${relatedFiles.length} vecinos relevantes en el grafo local.`
+    : `ProjectGrapher no detectó un archivo origen fuerte, pero preparó un set mínimo de pistas para revisar el flujo.`;
+
+  const modelPrompt = [
+    `Analiza este Error-to-Context Pack de un proyecto local cargado en ProjectGrapher.`,
+    `No tienes acceso al repositorio completo ni a un remoto; trabaja solo con este contexto resumido.`,
+    `Prioriza el archivo origen probable, luego los vecinos del grafo y por último los entry points si necesitas reconstruir el flujo.`,
+    `Explica qué revisar primero, hipótesis más probables y cambios mínimos sugeridos para confirmar la causa.`
+  ].join(' ');
+
+  return {
+    rawError,
+    errorHeadline,
+    summary,
+    projectName: insights.projectName,
+    stack: insights.stack,
+    stackPaths,
+    matchedSignals,
+    probableOrigin,
+    relatedFiles,
+    readingOrder,
+    implementationFocus,
+    modelPrompt
+  };
+};
+
+const buildErrorContextPack = (projectData: ProjectData, insights: ProjectInsights, rawError: string) => {
+  const data = buildErrorContextPackData(projectData, insights, rawError);
+  let text = `# Error-to-Context Pack: ${data.projectName}\n\n`;
+  text += `## Error Capturado\n`;
+  text += `${data.errorHeadline}\n\n`;
+  text += `## Resumen Operativo\n`;
+  text += `- ${data.summary}\n`;
+  text += `- Stack detectado en el proyecto: ${getTopItems(data.stack, 8)}\n`;
+  text += `- Señales detectadas: ${getTopItems(data.matchedSignals, 10)}\n\n`;
+  text += `## Stack Trace o Mensaje Base\n`;
+  text += '```text\n';
+  text += `${data.rawError}\n`;
+  text += '```\n\n';
+  text += `## Archivo Origen Probable\n`;
+  if (data.probableOrigin) {
+    text += `- \`${data.probableOrigin.path}\` (impacto: ${data.probableOrigin.importance}, score: ${data.probableOrigin.score})\n`;
+    data.probableOrigin.reasons.forEach((reason) => {
+      text += `  - ${reason}\n`;
+    });
+  } else {
+    text += `- No se detectó un origen con alta confianza.\n`;
+  }
+  text += `\n## Vecinos Relevantes del Grafo\n`;
+  if (!data.relatedFiles.length) {
+    text += `- No se detectaron vecinos claros para el origen probable.\n`;
+  } else {
+    data.relatedFiles.forEach((file) => {
+      text += `- \`${file.path}\`\n`;
+      file.reasons.forEach((reason) => {
+        text += `  - ${reason}\n`;
+      });
+    });
+  }
+  text += `\n## Orden de Revisión Recomendada\n`;
+  data.readingOrder.forEach((path, index) => {
+    text += `${index + 1}. \`${path}\`\n`;
+  });
+  text += `\n## Qué Revisar Primero\n`;
+  data.implementationFocus.forEach((item, index) => {
+    text += `${index + 1}. ${item}\n`;
+  });
+  text += `\n## Prompt Corto Para IA\n`;
+  text += `${data.modelPrompt}\n`;
+  return text;
+};
+
 interface ProjectState {
   projectData: ProjectData | null;
   projectName: string;
@@ -782,6 +1135,8 @@ interface ProjectState {
   generateHotspotReport: () => string;
   generateTaskPackData: (task: string) => AgentTaskPackData | null;
   generateTaskPack: (task: string) => string;
+  generateErrorContextPackData: (rawError: string) => ErrorContextPackData | null;
+  generateErrorContextPack: (rawError: string) => string;
   generateProjectBrief: () => string;
   generateProjectMetadata: () => string;
   generateGraphGuide: () => string;
@@ -1049,14 +1404,9 @@ export const useProjectStore = create<ProjectState>()(
         }));
         const stack = new Set<string>();
         projectData.files.forEach(f => {
-          const code = f.content.toLowerCase();
-          if (code.includes('express')) stack.add('Express.js');
-          if (code.includes('react')) stack.add('React');
-          if (code.includes('mongoose') || code.includes('sequelize') || code.includes('prisma')) stack.add('Database (ORM/ODM)');
-          if (code.includes('tailwind')) stack.add('Tailwind CSS');
-          if (code.includes('typescript')) stack.add('TypeScript');
-          if (code.includes('firebase')) stack.add('Firebase');
-          if (code.includes('socket.io')) stack.add('WebSockets');
+          const signals = detectTechStackSignals(f);
+          signals.stack.forEach((item) => stack.add(item));
+          if (signals.databases.length) stack.add('Database (ORM/ODM)');
         });
 
         const fileExtCount = new Map<string, number>();
@@ -1172,7 +1522,7 @@ export const useProjectStore = create<ProjectState>()(
 
         let context = "### ARCHITECTURAL INTELLIGENCE SNAPSHOT\n";
         context += `Project Context: ${normalizedName}\n`;
-        context += `Tech Stack: ${Array.from(stack).join(', ') || 'Standard Node.js/Web'}\n`;
+        context += `Tech Stack: ${Array.from(stack).join(', ') || 'Standard Web/App Stack'}\n`;
         context += `Scale: ${projectData.files.length} Analyzed Modules\n\n`;
 
         context += "### PROJECT IDENTITY\n";
@@ -1290,6 +1640,22 @@ export const useProjectStore = create<ProjectState>()(
         return buildTaskPack(projectData, insights, task, aiReview);
       },
 
+      generateErrorContextPackData: (rawError: string) => {
+        const { projectData } = get();
+        if (!projectData) return null;
+        const projectName = get().projectName || 'Unknown Project';
+        const insights = extractProjectInsights(projectData, projectName);
+        return buildErrorContextPackData(projectData, insights, rawError);
+      },
+
+      generateErrorContextPack: (rawError: string) => {
+        const { projectData } = get();
+        if (!projectData) return "";
+        const projectName = get().projectName || 'Unknown Project';
+        const insights = extractProjectInsights(projectData, projectName);
+        return buildErrorContextPack(projectData, insights, rawError);
+      },
+
       generateProjectBrief: () => {
         const { projectData } = get();
         if (!projectData) return "";
@@ -1325,34 +1691,14 @@ export const useProjectStore = create<ProjectState>()(
         };
 
         projectData.files.forEach((file) => {
-          const code = file.content.toLowerCase();
+          const signals = detectTechStackSignals(file);
           const language = languageMap[file.ext] || file.ext || 'Unknown';
           languageCount.set(language, (languageCount.get(language) || 0) + 1);
 
-          if (code.includes('react')) stack.add('React');
-          if (code.includes('vite')) stack.add('Vite');
-          if (code.includes('express')) stack.add('Express.js');
-          if (code.includes('fastapi')) stack.add('FastAPI');
-          if (code.includes('tailwind')) stack.add('Tailwind CSS');
-          if (code.includes('zustand')) stack.add('Zustand');
-          if (code.includes('dexie')) stack.add('Dexie');
-          if (code.includes('firebase')) stack.add('Firebase');
-          if (code.includes('socket.io')) stack.add('WebSockets');
-          if (code.includes('vite-plugin-pwa') || code.includes('manifest')) stack.add('PWA');
-
-          if (code.includes('prisma')) dbSignals.add('Prisma');
-          if (code.includes('mongoose')) dbSignals.add('MongoDB/Mongoose');
-          if (code.includes('sequelize')) dbSignals.add('Sequelize');
-          if (code.includes('typeorm')) dbSignals.add('TypeORM');
-          if (code.includes('dexie') || code.includes('indexeddb')) dbSignals.add('IndexedDB');
-          if (code.includes('sqlite')) dbSignals.add('SQLite');
-          if (code.includes('postgres')) dbSignals.add('PostgreSQL');
-          if (code.includes('mysql')) dbSignals.add('MySQL');
-
-          if (code.includes('fastapi')) runtimeSignals.add('Backend Python');
-          if (code.includes('express')) runtimeSignals.add('Backend Node');
-          if (['.tsx', '.jsx', '.vue', '.svelte'].includes(file.ext)) uiSignals.add('SPA Frontend');
-          if (code.includes('worker') || file.path.toLowerCase().includes('worker')) runtimeSignals.add('Background Worker');
+          signals.stack.forEach((item) => stack.add(item));
+          signals.databases.forEach((item) => dbSignals.add(item));
+          signals.runtime.forEach((item) => runtimeSignals.add(item));
+          signals.ui.forEach((item) => uiSignals.add(item));
 
           const lowerName = file.name.toLowerCase();
           if (['main.tsx', 'main.jsx', 'app.tsx', 'app.jsx', 'main.py', 'server.js', 'index.js', 'index.ts'].includes(lowerName)) {
@@ -1389,7 +1735,7 @@ export const useProjectStore = create<ProjectState>()(
 
         brief += `## Qué Pasarle A Otro Agente\n`;
         brief += `- Este proyecto usa: ${topLanguages.slice(0, 4).join(', ') || 'lenguajes no detectados con claridad'}.\n`;
-        brief += `- Componentes críticos: ${hotspotFiles.slice(0, 5).map(file => rootPath(file.path)).join(', ') || 'No detectados'}.\n`;
+        brief += `- Componentes críticos: ${hotspotFiles.slice(0, 5).map(file => withProjectRoot(projectName, file.path)).join(', ') || 'No detectados'}.\n`;
         brief += `- Resumen operativo: carga archivos del proyecto, detecta dependencias, construye un grafo, genera snapshots y puede pedir una auditoría con IA si hay proveedor configurado.\n`;
 
         return brief;
@@ -1430,25 +1776,12 @@ export const useProjectStore = create<ProjectState>()(
 
         projectData.files.forEach((file) => {
           const code = file.content.toLowerCase();
+          const signals = detectTechStackSignals(file);
           const language = extToLanguage[file.ext] || file.ext || 'Unknown';
           languages[language] = (languages[language] || 0) + 1;
 
-          if (code.includes('react')) technologies.add('React');
-          if (code.includes('vite')) technologies.add('Vite');
-          if (code.includes('tailwind')) technologies.add('Tailwind CSS');
-          if (code.includes('zustand')) technologies.add('Zustand');
-          if (code.includes('fastapi')) technologies.add('FastAPI');
-          if (code.includes('express')) technologies.add('Express.js');
-          if (code.includes('dexie')) technologies.add('Dexie');
-          if (code.includes('firebase')) technologies.add('Firebase');
-          if (code.includes('socket.io')) technologies.add('WebSockets');
-
-          if (code.includes('dexie') || code.includes('indexeddb')) databases.add('IndexedDB');
-          if (code.includes('mongoose')) databases.add('MongoDB/Mongoose');
-          if (code.includes('sequelize')) databases.add('Sequelize');
-          if (code.includes('prisma')) databases.add('Prisma');
-          if (code.includes('mysql')) databases.add('MySQL');
-          if (code.includes('postgres')) databases.add('PostgreSQL');
+          signals.stack.forEach((item) => technologies.add(item));
+          signals.databases.forEach((item) => databases.add(item));
 
           if (['.tsx', '.jsx', '.vue', '.svelte', '.html', '.css', '.scss'].includes(file.ext)) layers.frontend++;
           if (['.py', '.go', '.java', '.cs', '.php', '.rb'].includes(file.ext) || file.path.toLowerCase().includes('server/')) layers.backend++;

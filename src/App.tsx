@@ -37,7 +37,7 @@ export default function App() {
     showFileModal, showIAModal,
     setProjectData, setSelectedNode, setSearchQuery, setTreeSearch,
     setActiveTab, setIsFocusMode, processFiles, loadLastProject,
-    generateAIReview, generateAIContext, generateExecutiveView, generateSystemView, generateHotspotReport, generateTaskPackData, generateTaskPack, generateProjectBrief, generateProjectMetadata, generateGraphGuide, generateTreeOnly, setShowFileModal, setShowIAModal,
+    generateAIReview, generateAIContext, generateExecutiveView, generateSystemView, generateHotspotReport, generateTaskPackData, generateTaskPack, generateErrorContextPackData, generateErrorContextPack, generateProjectBrief, generateProjectMetadata, generateGraphGuide, generateTreeOnly, setShowFileModal, setShowIAModal,
     generateAIVisionDocument, generateAIArchitectureNarrative, generateAIRefactorPriorities, generateAIAgentHandoff,
     aiProvider, aiModel, customUrl, customKey, envKeys, checkEnvKeys,
     setAiProvider, setAiModel, setCustomUrl, setCustomKey, projectName,
@@ -50,6 +50,8 @@ export default function App() {
   const [isDesktopLayout, setIsDesktopLayout] = useState(false);
   const [showMobilePanel, setShowMobilePanel] = useState(false);
   const [agentTask, setAgentTask] = useState('Ajusta el perfil del usuario y encuentra los archivos que debo modificar.');
+  const [errorTraceInput, setErrorTraceInput] = useState('TypeError: Cannot read properties of undefined (reading \'map\')\n    at src/components/GraphCanvas.tsx:128:18\n    at src/App.tsx:512:7');
+  const [exportSection, setExportSection] = useState<'guided' | 'task' | 'errors' | 'ai' | 'exports'>('guided');
   const [isSavingAIDocs, setIsSavingAIDocs] = useState(false);
   const [aiDocsSaveStatus, setAIDocsSaveStatus] = useState<string | null>(null);
   const lastAutoSavedReviewRef = useRef<string | null>(null);
@@ -76,6 +78,7 @@ export default function App() {
 
   const hasServerKey = !!envKeys[aiProvider];
   const hasEffectiveKey = aiProvider === 'ollama' || !!customKey || hasServerKey;
+  const aiReady = hasEffectiveKey && !!projectData;
 
   // Manejar Escape para quitar foco de nodos
   useEffect(() => {
@@ -155,7 +158,7 @@ export default function App() {
       const response = await fetch('/api/context/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files })
+        body: JSON.stringify({ projectName, files })
       });
 
       const payload = await response.json();
@@ -163,14 +166,15 @@ export default function App() {
         throw new Error(payload.detail || payload.error || 'No se pudieron guardar los documentos IA en contexto/');
       }
 
-      setAIDocsSaveStatus(`Guardados en contexto/: ${payload.saved.join(', ')}`);
+      const targetDirectory = payload.relative_directory || 'contexto/';
+      setAIDocsSaveStatus(`Guardados en ${targetDirectory}: ${payload.saved.join(', ')}`);
     } catch (error: any) {
       console.error('Error saving AI docs to contexto:', error);
       setAIDocsSaveStatus(error.message || 'No se pudieron guardar los documentos IA en contexto/');
     } finally {
       setIsSavingAIDocs(false);
     }
-  }, []);
+  }, [projectName]);
 
   useEffect(() => {
     if (!aiReview) {
@@ -217,6 +221,26 @@ export default function App() {
 
   const taskPackData = generateTaskPackData(agentTask);
   const taskPackPreview = generateTaskPack(agentTask);
+  const errorContextPackData = generateErrorContextPackData(errorTraceInput);
+  const errorContextPackPreview = generateErrorContextPack(errorTraceInput);
+
+  const focusNodeByProjectPath = useCallback((projectPath: string) => {
+    if (!projectData || !projectPath) return;
+
+    const normalized = projectPath.replace(/\\/g, '/').toLowerCase();
+    const projectPrefix = `${(projectName || '').replace(/\\/g, '/').toLowerCase()}/`;
+    const relativePath = normalized.startsWith(projectPrefix) ? normalized.slice(projectPrefix.length) : normalized;
+
+    const node = projectData.nodes.find((item) => {
+      const nodePath = item.id.replace(/\\/g, '/').toLowerCase();
+      return nodePath === relativePath || nodePath === normalized || normalized.endsWith(`/${nodePath}`);
+    });
+
+    if (!node) return;
+    setSelectedNode(node);
+    setIsFocusMode(true);
+    setActiveTab('details');
+  }, [projectData, projectName, setActiveTab, setIsFocusMode, setSelectedNode]);
 
   if (!projectData) {
     return (
@@ -329,13 +353,14 @@ export default function App() {
           </button>
           <button
             onClick={generateAIReview}
-            disabled={isReviewing || !hasEffectiveKey}
+            disabled={isReviewing || !aiReady}
             className={cn(
               "rounded-xl px-3 py-2 text-[10px] font-bold transition-all",
-              isReviewing || !hasEffectiveKey
+              isReviewing || !aiReady
                 ? "bg-gray-800 text-gray-500"
                 : "bg-brand-primary text-white"
             )}
+            title={!projectData ? 'Carga un proyecto para usar la auditoría IA' : !hasEffectiveKey ? 'Configura una llave o usa Ollama para habilitar la auditoría IA' : 'Generar auditoría IA'}
           >
             IA
           </button>
@@ -392,11 +417,12 @@ export default function App() {
         <div className="mt-auto hidden w-full flex-col items-center gap-4 px-4 lg:flex lg:px-0">
           <button
             onClick={() => { generateAIReview(); setShowIAModal(true); }}
-            disabled={isReviewing}
+            disabled={isReviewing || !aiReady}
             className={cn(
               "p-3 rounded-xl transition-all border border-gray-800 flex items-center justify-center gap-3 w-full md:w-auto",
-              isReviewing ? "bg-gray-800 text-gray-400" : "bg-brand-primary/10 text-brand-primary hover:bg-brand-primary hover:text-white"
+              isReviewing || !aiReady ? "bg-gray-800 text-gray-400" : "bg-brand-primary/10 text-brand-primary hover:bg-brand-primary hover:text-white"
             )}
+            title={!projectData ? 'Carga un proyecto para usar la auditoría IA' : !hasEffectiveKey ? 'Configura una llave o usa Ollama para habilitar la auditoría IA' : 'Generar reporte IA'}
           >
             {isReviewing ? <Loader2 className="w-6 h-6 animate-spin" /> : <BarChart3 className="w-6 h-6" />}
             <span className="md:hidden font-bold">Generar Reporte AI</span>
@@ -641,11 +667,61 @@ export default function App() {
             <motion.div key="context" className="flex-1 flex flex-col h-full overflow-hidden bg-brand-surface">
               <div className="border-b border-gray-800 p-4 sm:p-6 lg:p-7 xl:p-8">
                 <h3 className="mb-2 text-2xl font-bold text-white font-display sm:text-3xl">Centro de Exportación</h3>
-                <p className="text-sm text-gray-500">Descarga los datos optimizados para otros agentes de IA.</p>
+                <p className="text-sm text-gray-500">Organiza los exports por intención: entender, delegar, depurar, enriquecer con IA o descargar artefactos base.</p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setExportSection('guided')}
+                    className={cn(
+                      "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
+                      exportSection === 'guided' ? "border-brand-primary bg-brand-primary text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-brand-primary/40 hover:text-white"
+                    )}
+                  >
+                    Overview
+                  </button>
+                  <button
+                    onClick={() => setExportSection('task')}
+                    className={cn(
+                      "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
+                      exportSection === 'task' ? "border-emerald-500 bg-emerald-500 text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-emerald-500/40 hover:text-white"
+                    )}
+                  >
+                    Task Pack
+                  </button>
+                  <button
+                    onClick={() => setExportSection('errors')}
+                    className={cn(
+                      "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
+                      exportSection === 'errors' ? "border-rose-500 bg-rose-500 text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-rose-500/40 hover:text-white"
+                    )}
+                  >
+                    Error Pack
+                  </button>
+                  {aiReview && (
+                    <button
+                      onClick={() => setExportSection('ai')}
+                      className={cn(
+                        "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
+                        exportSection === 'ai' ? "border-fuchsia-500 bg-fuchsia-500 text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-fuchsia-500/40 hover:text-white"
+                      )}
+                    >
+                      Documentos IA
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setExportSection('exports')}
+                    className={cn(
+                      "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
+                      exportSection === 'exports' ? "border-sky-500 bg-sky-500 text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-sky-500/40 hover:text-white"
+                    )}
+                  >
+                    Exportes Base
+                  </button>
+                </div>
               </div>
 
               <div className="custom-scrollbar flex-1 overflow-y-auto space-y-8 p-4 sm:p-6 lg:p-7 xl:p-8">
-                <div className="space-y-4 border-b border-gray-800 pb-6">
+                {exportSection === 'guided' && (
+                <div className="space-y-6">
                   <div className="space-y-2">
                     <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-primary">Agent Workbench</div>
                     <h4 className="text-xl font-bold text-white font-display sm:text-2xl">Contexto preciso para programadores y agentes</h4>
@@ -692,9 +768,10 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                )}
 
-                {aiReview && (
-                  <div className="space-y-4 border-b border-gray-800 pb-6">
+                {exportSection === 'ai' && aiReview && (
+                  <div className="space-y-4">
                     <div className="space-y-2">
                       <div className="text-[10px] font-black uppercase tracking-[0.24em] text-fuchsia-400">Documentos IA</div>
                       <h4 className="text-lg font-bold text-white sm:text-xl">Lecturas automáticas para handoff</h4>
@@ -706,7 +783,7 @@ export default function App() {
                     <div className="space-y-3 rounded-2xl border border-fuchsia-500/15 bg-fuchsia-500/5 p-4">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <p className="text-xs leading-relaxed text-gray-300">
-                          Cuando se genera la auditor&iacute;a IA, estos archivos tambi&eacute;n se guardan autom&aacute;ticamente en <span className="font-mono text-fuchsia-300">contexto/</span>.
+                          Cuando se genera la auditor&iacute;a IA, estos archivos tambi&eacute;n se guardan autom&aacute;ticamente en <span className="font-mono text-fuchsia-300">contexto/{projectName || 'Proyecto'}</span>.
                         </p>
                         <button
                           onClick={() => void saveFilesToContext(getAIDocumentExports(), 'manual')}
@@ -772,7 +849,8 @@ export default function App() {
                   </div>
                 )}
 
-                <div className="space-y-4 border-b border-gray-800 pb-6">
+                {exportSection === 'task' && (
+                <div className="space-y-4">
                   <div className="space-y-1">
                     <div className="text-[10px] font-black uppercase tracking-[0.24em] text-emerald-400">Task Pack Builder</div>
                     <h4 className="text-lg font-bold text-white sm:text-xl">Paquete corto para una tarea concreta</h4>
@@ -865,8 +943,128 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+                )}
 
-                {/* Export Cards */}
+                {exportSection === 'errors' && (
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-rose-400">Error-to-Context Pack</div>
+                    <h4 className="text-lg font-bold text-white sm:text-xl">Contexto corto para depurar un error local</h4>
+                    <p className="text-sm leading-relaxed text-gray-400">
+                      Pega el error o stack trace de tu proyecto local. ProjectGrapher intenta ubicar el archivo origen en el grafo, resaltar vecinos relevantes y generar un mini pack en vez de mandar medio proyecto.
+                    </p>
+                  </div>
+
+                  <textarea
+                    value={errorTraceInput}
+                    onChange={(e) => setErrorTraceInput(e.target.value)}
+                    rows={5}
+                    placeholder="Ejemplo: TypeError: Cannot read properties of undefined at src/components/UserCard.tsx:42:11"
+                    className="w-full rounded-2xl border border-gray-800 bg-black/30 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-rose-500"
+                  />
+
+                  <p className="text-xs leading-relaxed text-gray-500">
+                    Este pack es determinístico: usa el grafo local, los nombres de archivo, las rutas del stack y las conexiones entre módulos. Si luego quieres usar IA, este markdown ya queda mucho más enfocado.
+                  </p>
+
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <button
+                      onClick={() => handleDownloadFile(errorContextPackPreview, `${projectName}_error_context_pack.md`, 'text/markdown')}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-rose-500 px-4 py-3 text-sm font-bold text-black transition-all hover:brightness-110"
+                    >
+                      <Download className="h-4 w-4" />
+                      Descargar Error Pack
+                    </button>
+                    <button
+                      onClick={() => errorContextPackData?.probableOrigin && focusNodeByProjectPath(errorContextPackData.probableOrigin.path)}
+                      disabled={!errorContextPackData?.probableOrigin}
+                      className={cn(
+                        "inline-flex w-full items-center justify-center gap-2 rounded-2xl border px-4 py-3 text-sm font-bold transition-all",
+                        errorContextPackData?.probableOrigin
+                          ? "border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                          : "border-gray-800 bg-gray-900 text-gray-500"
+                      )}
+                    >
+                      <Search className="h-4 w-4" />
+                      Enfocar Origen en el Grafo
+                    </button>
+                  </div>
+
+                  <div className="space-y-4 rounded-2xl border border-white/6 bg-black/40 p-4">
+                    {errorContextPackData && (
+                      <>
+                        <div className="space-y-1">
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-rose-400">Resumen del Error Pack</div>
+                          <p className="text-sm text-gray-300">{errorContextPackData.summary}</p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Origen probable</div>
+                          {errorContextPackData.probableOrigin ? (
+                            <div className="rounded-xl border border-white/6 bg-white/[0.03] p-3">
+                              <div className="break-all font-mono text-xs text-white">{errorContextPackData.probableOrigin.path}</div>
+                              <div className="mt-1 text-[11px] text-gray-400">Impacto: {errorContextPackData.probableOrigin.importance} · Score: {errorContextPackData.probableOrigin.score}</div>
+                              <div className="mt-2 space-y-1">
+                                {errorContextPackData.probableOrigin.reasons.map((reason) => (
+                                  <div key={reason} className="text-[11px] text-gray-500">- {reason}</div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-xs text-gray-500">No se detectó un origen con alta confianza.</div>
+                          )}
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Vecinos relevantes</div>
+                          <div className="space-y-2">
+                            {errorContextPackData.relatedFiles.slice(0, 5).map((file) => (
+                              <div key={file.path} className="rounded-xl border border-white/6 bg-white/[0.03] p-3">
+                                <div className="break-all font-mono text-xs text-white">{file.path}</div>
+                                <div className="mt-1 text-[11px] text-gray-500">{file.reasons[0]}</div>
+                              </div>
+                            ))}
+                            {!errorContextPackData.relatedFiles.length && (
+                              <div className="text-xs text-gray-500">No se detectaron vecinos claros a partir del nodo origen.</div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Orden de revisión</div>
+                          <div className="space-y-1">
+                            {errorContextPackData.readingOrder.map((path, index) => (
+                              <div key={path} className="text-xs text-gray-300">
+                                <span className="mr-2 text-rose-400">{index + 1}.</span>
+                                <span className="break-all font-mono">{path}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    <div className="border-t border-white/6 pt-4">
+                      <div className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Markdown exportable</div>
+                      <div className="max-h-[220px] overflow-auto custom-scrollbar">
+                        <div className="prose prose-invert prose-sm max-w-none break-words prose-headings:mb-3 prose-headings:text-white prose-p:text-gray-300 prose-li:text-gray-300 prose-strong:text-white prose-code:text-rose-300">
+                          <Markdown>{errorContextPackPreview}</Markdown>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                )}
+
+                {exportSection === 'exports' && (
+                <>
+                <div className="space-y-3 rounded-3xl border border-white/6 bg-black/20 p-4">
+                  <div className="text-[10px] font-black uppercase tracking-[0.22em] text-sky-400">Exportes Base</div>
+                  <p className="text-sm leading-relaxed text-gray-400">
+                    Artefactos determinísticos para compartir, archivar o pasar a otro agente sin depender de una auditoría IA.
+                  </p>
+                </div>
+
                 <div className="space-y-4">
                    <div className="group flex flex-col gap-4 rounded-[2rem] border border-gray-800 bg-brand-bg/40 p-5 transition-all hover:border-brand-primary/50 sm:flex-row sm:items-center sm:justify-between sm:p-6">
                       <div className="flex items-center gap-5">
@@ -959,31 +1157,6 @@ export default function App() {
                    </div>
                 </div>
 
-                {/* Quote Card */}
-                <div className="flex flex-col items-start gap-4 rounded-[2rem] border border-brand-primary/10 bg-brand-primary/5 p-5 sm:flex-row sm:items-center sm:gap-6 sm:p-8">
-                   <div className="p-4 bg-brand-primary/10 rounded-full shrink-0">
-                      <Code2 className="w-6 h-6 text-brand-primary" />
-                   </div>
-                   <p className="text-sm italic text-brand-primary/80 font-medium leading-relaxed">
-                      "¡Exacto! Esto es lo que ocupábamos los desarrolladores para dar contexto real a nuestros agentes de IA."
-                   </p>
-                </div>
-
-                {/* Pro Tip Card */}
-                <div className="space-y-6 rounded-[2rem] border border-emerald-500/20 bg-brand-bg/80 p-5 sm:p-8">
-                   <div className="flex items-center gap-3 text-emerald-500">
-                      <Sparkles className="w-5 h-5" />
-                      <span className="text-[10px] font-black uppercase tracking-[0.2em]">Consejo Pro para el Agente</span>
-                   </div>
-                   <p className="text-xs text-gray-400 leading-relaxed">
-                      Cuando descargues el <span className="text-emerald-400 font-mono">snapshot_completo.txt</span>, simplemente dile a tu agente de IA:
-                   </p>
-                   <div className="bg-black/60 p-6 rounded-2xl border border-white/5 italic text-gray-300 text-xs leading-relaxed font-serif">
-                      "Analiza este snapshot de mi arquitectura. Dame un resumen de la lógica de flujo y propón una mejora modular basada en las capas detectadas."
-                   </div>
-                </div>
-
-                {/* Snapshot Preview Section */}
                 <div className="space-y-4 pt-4">
                   <div className="flex flex-col gap-4 rounded-3xl border border-white/5 bg-brand-bg/20 p-4 lg:flex-row lg:items-center lg:justify-between">
                     <div className="flex items-center gap-4">
@@ -1009,6 +1182,8 @@ export default function App() {
                     <pre className="whitespace-pre leading-relaxed">{generateAIContext()}</pre>
                   </div>
                 </div>
+                </>
+                )}
               </div>
             </motion.div>
           )}
@@ -1045,6 +1220,9 @@ export default function App() {
                          <p className="text-xs text-amber-200/70 leading-relaxed">
                             No has configurado una API Key para <strong>{aiProvider.toUpperCase()}</strong>. Para generar reportes automáticos, necesitas añadir tu llave en los ajustes.
                          </p>
+                         <p className="text-[11px] text-amber-100/60 leading-relaxed">
+                            El análisis del grafo, snapshots, task packs y vistas determinísticas siguen disponibles sin IA. Esta pestaña solo habilita el enriquecimiento con modelo.
+                         </p>
                          <button 
                            onClick={() => setActiveTab('settings')}
                            className="text-[10px] font-bold text-amber-500 hover:underline flex items-center gap-1"
@@ -1059,10 +1237,10 @@ export default function App() {
                       <p className="text-gray-500 text-sm mb-6">No hay reportes generados aún.</p>
                       <button
                         onClick={generateAIReview}
-                        disabled={!hasEffectiveKey}
+                        disabled={!aiReady}
                         className={cn(
                           "px-8 py-3 rounded-2xl text-sm font-bold transition-all",
-                          (!hasEffectiveKey)
+                          (!aiReady)
                             ? "bg-gray-800 text-gray-500 cursor-not-allowed"
                             : "bg-brand-primary text-white hover:brightness-110 shadow-lg shadow-brand-primary/20"
                         )}

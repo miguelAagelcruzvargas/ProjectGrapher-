@@ -22,8 +22,9 @@ Capacidades principales:
 - Snapshots del proyecto optimizados para contexto de LLM
 - Vistas sistémicas y resúmenes ejecutivos
 - Task packs para prompts como `ajusta el perfil del usuario y dime qué archivos modificar`
-- Auditorías IA con proveedores como Groq, OpenAI, Gemini, DeepSeek, OpenRouter, Mistral u Ollama
-- Documentos de handoff generados por IA y guardados en `contexto/`
+- Error-to-Context Packs a partir de errores pegados desde tu proyecto local cargado
+- Auditorías IA opcionales con proveedores como Groq, OpenAI, Gemini, DeepSeek, OpenRouter, Mistral u Ollama
+- Documentos de handoff generados por IA y guardados en `contexto/<nombre-del-proyecto>/`
 
 ## Por Qué Existe
 
@@ -125,7 +126,18 @@ ProjectGrapher puede generar archivos como:
 - `*_refactor_priorities_ai.md`
 - `*_agent_handoff_ai.md`
 
-Los archivos enriquecidos con IA se guardan automáticamente en la carpeta local `contexto/` una vez que se genera una auditoría IA.
+Los archivos enriquecidos con IA se guardan automáticamente en la carpeta local `contexto/<nombre-del-proyecto>/` una vez que se genera una auditoría IA.
+
+## Modo Determinístico vs Modo IA
+
+ProjectGrapher separa dos capas de trabajo:
+
+- `Determinístico`: análisis del árbol, dependencias, hotspots, graph guide, metadata, brief, system view y task packs. Esta parte funciona sin proveedores de IA.
+- `IA opcional`: auditoría arquitectónica, visión interpretada por modelo, narrativa enriquecida, prioridades sugeridas por IA y handoff asistido.
+
+El `Error-to-Context Pack` pertenece primero al modo determinístico: parte de un stack trace o mensaje de error pegado desde un proyecto local ya cargado, ubica el origen probable en el grafo y arma un mini contexto antes de escalar a IA.
+
+Si no hay llave configurada ni proveedor activo, la aplicación debe seguir entregando valor en el modo determinístico y reservar el enriquecimiento con IA solo cuando realmente pueda ejecutarse bien.
 
 ## Stack Tecnológico
 

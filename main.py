@@ -147,7 +147,14 @@ class ContextExportFile(BaseModel):
 
 
 class ContextExportRequest(BaseModel):
+    projectName: Optional[str] = Field(default=None, description="Nombre del proyecto analizado")
     files: List[ContextExportFile]
+
+
+def sanitize_context_segment(value: Optional[str]) -> str:
+    raw = (value or "").strip()
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", raw).strip("._")
+    return safe or "Unknown_Project"
 
 app = FastAPI(title="ProjectGrapher AI Backend")
 
@@ -269,7 +276,9 @@ async def export_context_files(request: ContextExportRequest):
     if not request.files:
         raise HTTPException(status_code=400, detail="No se recibieron archivos para exportar")
 
-    CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
+    project_segment = sanitize_context_segment(request.projectName)
+    project_context_dir = CONTEXT_DIR / project_segment
+    project_context_dir.mkdir(parents=True, exist_ok=True)
     saved_files: List[str] = []
 
     for file in request.files:
@@ -277,13 +286,14 @@ async def export_context_files(request: ContextExportRequest):
         if not safe_name:
             raise HTTPException(status_code=400, detail="Nombre de archivo inválido para exportación")
 
-        target = CONTEXT_DIR / safe_name
+        target = project_context_dir / safe_name
         target.write_text(file.content, encoding="utf-8")
         saved_files.append(str(target.name))
 
     return {
         "saved": saved_files,
-        "directory": str(CONTEXT_DIR)
+        "directory": str(project_context_dir),
+        "relative_directory": f"contexto/{project_segment}"
     }
 
 @app.get("/health")
