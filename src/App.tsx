@@ -3,323 +3,99 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import { 
-  Upload, Network, Code2, 
-  Copy, FileText, CheckCircle2, 
-  ChevronRight, X, Play, 
-  Search, Info, Database, Download, Lightbulb,
-  LayoutDashboard, Share2, Folder, ChevronDown,
-  Sparkles, AlertCircle, Loader2, BarChart3, Activity
+import React, { useMemo, useEffect, useState, useCallback, useRef } from 'react';
+import {
+  Upload, Network, Code2,
+  FileText, ChevronRight, X, Play,
+  Search, Info, Database, Download,
+  LayoutDashboard, Share2, Folder,
+  Sparkles, AlertCircle, Loader2, BarChart3, Activity, Settings, LogOut
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+
 import { GraphCanvas } from './components/GraphCanvas';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { ProjectFile, GraphNode, GraphLink, ProjectData, TreeNode } from './types';
-import { getExtension, findDependencies, shouldProcessFile, buildFileTree, generateTreeText, calculateAAMetrics } from './utils/analysis';
-import { GoogleGenAI } from "@google/genai";
-import Markdown from 'react-markdown';
+import { Modal } from './components/Modal';
+import { TreeItem } from './components/TreeItem';
+import { NavItem } from './components/NavItem';
+import { AIConfig } from './components/AIConfig';
 
-const hasAiKey = !!process.env.GEMINI_API_KEY;
-const ai = hasAiKey ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+import { useProjectStore } from './store/useProjectStore';
+import { buildFileTree, calculateAAMetrics } from './utils/analysis';
+import Markdown from 'react-markdown';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-const Modal = ({ isOpen, onClose, title, children }: { 
-  isOpen: boolean, 
-  onClose: () => void, 
-  title: string, 
-  children: React.ReactNode 
-}) => {
-  return (
-    <AnimatePresence>
-      {isOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 md:p-12">
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={onClose}
-            className="absolute inset-0 bg-black/80 backdrop-blur-md"
-          />
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95, y: 40 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 40 }}
-            className="relative w-full max-w-5xl max-h-full bg-brand-bg border border-white/10 rounded-[32px] shadow-2xl flex flex-col overflow-hidden"
-          >
-            <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
-              <h3 className="text-xl font-bold text-white font-display uppercase tracking-wider">{title}</h3>
-              <button 
-                onClick={onClose}
-                className="p-2 hover:bg-white/5 rounded-xl transition-colors text-gray-500 hover:text-white"
-              >
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto custom-scrollbar p-6 md:p-10">
-              {children}
-            </div>
-          </motion.div>
-        </div>
-      )}
-    </AnimatePresence>
-  );
-};
-
-const FileIcon = ({ ext, className }: { ext: string, className?: string }) => {
-  if (['.js', '.ts', '.tsx', '.jsx'].includes(ext)) return <Code2 className={className} />;
-  if (ext === '.json') return <Database className={className} />;
-  if (['.css', '.scss', '.less'].includes(ext)) return <Share2 className={className} />;
-  return <FileText className={className} />;
-};
-
-const TreeItem = ({ node, level, onFileSelect, selectedId }: { 
-  node: TreeNode, 
-  level: number, 
-  onFileSelect: (f: ProjectFile) => void,
-  selectedId: string | null 
-}) => {
-  const [isOpen, setIsOpen] = useState(level < 2); // Auto-open top levels
-
-  return (
-    <div>
-      <button
-        onClick={() => node.isFile ? (node.fileData && onFileSelect(node.fileData)) : setIsOpen(!isOpen)}
-        className={cn(
-          "w-full text-left p-1.5 rounded-lg hover:bg-white/5 transition-all group flex items-center gap-2",
-          node.isFile && selectedId === node.path && "bg-brand-primary/10 border-brand-primary/20"
-        )}
-        style={{ paddingLeft: `${level * 12 + 8}px` }}
-      >
-        {node.isFile ? (
-          <FileIcon ext={getExtension(node.name)} className="w-4 h-4 text-gray-500 group-hover:text-brand-primary shrink-0" />
-        ) : (
-          <div className="flex items-center gap-1.5 shrink-0">
-             <ChevronDown className={cn("w-3 h-3 text-gray-600 transition-transform", !isOpen && "-rotate-90")} />
-             <Folder className="w-4 h-4 text-brand-primary/60 fill-brand-primary/10" />
-          </div>
-        )}
-        <span className={cn(
-          "text-xs truncate transition-colors",
-          node.isFile ? "text-gray-400 group-hover:text-gray-200" : "text-gray-200 font-medium",
-          node.isFile && selectedId === node.path && "text-brand-primary"
-        )}>
-          {node.name}
-        </span>
-      </button>
-      {!node.isFile && isOpen && node.children.map((child, i) => (
-        <TreeItem 
-          key={i} 
-          node={child} 
-          level={level + 1} 
-          onFileSelect={onFileSelect}
-          selectedId={selectedId}
-        />
-      ))}
-    </div>
-  );
-};
-
-// --- MAIN COMPONENT ---
-
 export default function App() {
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [projectData, setProjectData] = useState<ProjectData | null>(null);
-  const [skippedCount, setSkippedCount] = useState(0);
-  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [treeSearch, setTreeSearch] = useState('');
-  const [copied, setCopied] = useState(false);
-  const [activeTab, setActiveTab] = useState<'details' | 'context' | 'files' | 'ia'>('details');
-  const [aiReview, setAiReview] = useState<string | null>(null);
-  const [aiError, setAiError] = useState<string | null>(null);
-  const [isReviewing, setIsReviewing] = useState(false);
-  const [isFocusMode, setIsFocusMode] = useState(false);
+  const {
+    projectData, skippedCount, selectedNode, isProcessing, isReviewing,
+    searchQuery, treeSearch, activeTab, isFocusMode, aiReview, aiError,
+    showFileModal, showIAModal,
+    setProjectData, setSelectedNode, setSearchQuery, setTreeSearch,
+    setActiveTab, setIsFocusMode, processFiles, loadLastProject,
+    generateAIReview, generateAIContext, generateExecutiveView, generateSystemView, generateHotspotReport, generateTaskPackData, generateTaskPack, generateProjectBrief, generateProjectMetadata, generateGraphGuide, generateTreeOnly, setShowFileModal, setShowIAModal,
+    generateAIVisionDocument, generateAIArchitectureNarrative, generateAIRefactorPriorities, generateAIAgentHandoff,
+    aiProvider, aiModel, customUrl, customKey, envKeys, checkEnvKeys,
+    setAiProvider, setAiModel, setCustomUrl, setCustomKey, projectName,
+    closeProject
+  } = useProjectStore();
+
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  
-  const [showIAModal, setShowIAModal] = useState(false);
-  const [showFileModal, setShowFileModal] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [isDesktopLayout, setIsDesktopLayout] = useState(false);
+  const [showMobilePanel, setShowMobilePanel] = useState(false);
+  const [agentTask, setAgentTask] = useState('Ajusta el perfil del usuario y encuentra los archivos que debo modificar.');
+  const [isSavingAIDocs, setIsSavingAIDocs] = useState(false);
+  const [aiDocsSaveStatus, setAIDocsSaveStatus] = useState<string | null>(null);
+  const lastAutoSavedReviewRef = useRef<string | null>(null);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const rawFiles = e.target.files;
-    if (!rawFiles || rawFiles.length === 0) return;
+  useEffect(() => {
+    loadLastProject();
+    checkEnvKeys();
+  }, []);
 
-    setIsProcessing(true);
-    setProjectData(null);
-    setSelectedNode(null);
-
-    const validFiles: ProjectFile[] = [];
-    const fileList = Array.from(rawFiles) as File[];
-    let localSkipped = 0;
-    
-    // Detect project name from the first file's path
-    const firstPath = (fileList[0] as any).webkitRelativePath || '';
-    const projectName = firstPath.split('/')[0] || "Project";
-
-    // 1. Filter and read files
-    for (const file of fileList) {
-      const path = (file as any).webkitRelativePath || file.name;
-      if (!shouldProcessFile(path, file.size)) {
-        localSkipped++;
-        continue;
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 1024px)');
+    const updateLayout = () => {
+      const desktop = media.matches;
+      setIsDesktopLayout(desktop);
+      if (desktop) {
+        setShowMobilePanel(false);
       }
-      
-      if (validFiles.length >= 1500) {
-        console.warn("Reached maximum file limit (1500). Skipping remaining files.");
-        localSkipped += fileList.length - validFiles.length - localSkipped;
-        break;
+    };
+
+    updateLayout();
+    media.addEventListener('change', updateLayout);
+    return () => media.removeEventListener('change', updateLayout);
+  }, []);
+
+  const hasServerKey = !!envKeys[aiProvider];
+  const hasEffectiveKey = aiProvider === 'ollama' || !!customKey || hasServerKey;
+
+  // Manejar Escape para quitar foco de nodos
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSelectedNode(null);
+        setIsFocusMode(false);
       }
-
-      try {
-        const text = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target?.result as string || '');
-          reader.readAsText(file);
-        });
-
-        validFiles.push({
-          id: path,
-          name: file.name,
-          path: path,
-          content: text,
-          ext: getExtension(file.name),
-          size: file.size,
-          importance: 0
-        });
-      } catch (err) {
-        console.error("Error reading file:", path, err);
-      }
-    }
-
-    // 2. Build Links and calculate initial importance
-    const links: GraphLink[] = [];
-    const importanceMap: Record<string, number> = {};
-
-    validFiles.forEach(f => {
-      const deps = findDependencies(f.content, f.name);
-      deps.forEach(dep => {
-        // More robust matching: handle relative paths and extensions
-        // Remove trailing slashes and common relative path characters
-        const cleanDep = dep.replace(/^(\.\/|\.\.\/)+/, '').split('/').pop()?.split('.')[0] || dep;
-        
-        // Exact name match or path contains the dependency name
-        const targetFile = validFiles.find(vf => 
-          vf.name.split('.')[0] === cleanDep || 
-          vf.path.endsWith(`${cleanDep}${vf.ext}`)
-        );
-        
-        if (targetFile && targetFile.id !== f.id) {
-          links.push({ source: f.id, target: targetFile.id });
-          importanceMap[targetFile.id] = (importanceMap[targetFile.id] || 0) + 1;
-        }
-      });
-    });
-
-    // 3. Create Nodes
-    const nodes: GraphNode[] = validFiles.map(f => {
-      const pathParts = f.path.split('/');
-      const cluster = pathParts.length > 2 ? pathParts.slice(0, -1).join('/') : 'root';
-      
-      // Generate deterministic initial position based on file ID (path)
-      let hash = 0;
-      for (let i = 0; i < f.id.length; i++) {
-        hash = ((hash << 5) - hash) + f.id.charCodeAt(i);
-        hash |= 0; 
-      }
-      const posX = 400 + (hash % 200);
-      const posY = 300 + ((hash >> 8) % 150);
-
-      return {
-        id: f.id,
-        label: f.name,
-        group: f.ext,
-        cluster: cluster,
-        size: Math.max(12, Math.min(32, 10 + (importanceMap[f.id] || 0) * 4)),
-        data: { ...f, importance: importanceMap[f.id] || 0 },
-        x: posX,
-        y: posY
-      };
-    });
-
-    setProjectData({ files: validFiles, nodes, links });
-    setSkippedCount(localSkipped);
-    setIsProcessing(false);
-  };
-
-  const handleDownloadFile = (content: string, filename: string, type: string) => {
-    const blob = new Blob([content], { type });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  const handleAIReview = async () => {
-    if (!projectData || isReviewing || !ai) return;
-    setIsReviewing(true);
-    setAiError(null);
-    setShowIAModal(true);
-    try {
-      const context = generateAIContext();
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Eres un Arquitecto de Software Senior nivel Staff. 
-Analiza la siguiente arquitectura de proyecto y proporciona un reporte técnico de alta calidad en español.
-Sigue este formato Markdown:
-# 🏗️ Reporte Arquitectónico AI
-
-## 🎯 Resumen Ejecutivo
-(Breve descripción de qué hace el proyecto y cómo está organizado)
-
-## 💎 Fortalezas
-- (Puntos clave bien logrados)
-
-## 🛠️ Oportunidades de Mejora / Deuda Técnica
-- (Cosas que podrían romperse o escalar mal)
-
-## 🚀 Hoja de Ruta para Escalamiento Enterprise
-(Sugerencias de patrones de diseño, herramientas o infraestructura)
-
-Contexto extraído del grafo:
-${context}`,
-      });
-      
-      if (!response.text) {
-        throw new Error("No data received from API");
-      }
-      setAiReview(response.text);
-    } catch (err: any) {
-      console.error("AI Error:", err);
-      if (err.message?.includes("429") || err.message?.toLowerCase().includes("quota")) {
-        setAiError("Cuota de API excedida. Por favor, intenta de nuevo en un momento o usa una API Key con límites más altos.");
-      } else if (err.message?.includes("403") || err.message?.includes("401")) {
-        setAiError("Error de permisos: La API Key configurada no es válida o no tiene acceso a Gemini 3 Flash.");
-      } else if (err.message?.includes("fetch") || !navigator.onLine) {
-        setAiError("Error de conexión: No se pudo contactar con el servicio de IA. Revisa tu conexión a internet.");
-      } else {
-        setAiError("Ocurrió un error inesperado al procesar el análisis arquitectónico.");
-      }
-    } finally {
-      setIsReviewing(false);
-    }
-  };
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [setSelectedNode, setIsFocusMode]);
 
   const filteredNodes = useMemo(() => {
     if (!projectData) return [];
     let baseNodes = projectData.nodes;
 
     if (searchQuery) {
-      baseNodes = baseNodes.filter(n => 
-        n.label.toLowerCase().includes(searchQuery.toLowerCase()) || 
+      baseNodes = baseNodes.filter(n =>
+        n.label.toLowerCase().includes(searchQuery.toLowerCase()) ||
         n.id.toLowerCase().includes(searchQuery.toLowerCase())
       );
     }
@@ -338,84 +114,91 @@ ${context}`,
     return baseNodes;
   }, [projectData, searchQuery, isFocusMode, selectedNode]);
 
-  const generateAIContext = () => {
-    if (!projectData) return "";
+  const architectureMetrics = useMemo(() => {
+    if (!projectData) return null;
+    return calculateAAMetrics(projectData.files, projectData.links);
+  }, [projectData]);
 
-    // Detect technical stack
-    const stack = new Set<string>();
-    projectData.files.forEach(f => {
-      const code = f.content.toLowerCase();
-      if (code.includes('express')) stack.add('Express.js');
-      if (code.includes('react')) stack.add('React');
-      if (code.includes('mongoose') || code.includes('sequelize') || code.includes('prisma')) stack.add('Database (ORM/ODM)');
-      if (code.includes('tailwind')) stack.add('Tailwind CSS');
-      if (code.includes('typescript')) stack.add('TypeScript');
-      if (code.includes('firebase')) stack.add('Firebase');
-      if (code.includes('socket.io')) stack.add('WebSockets');
-    });
+  const handleGraphNodeClick = useCallback((node: any) => {
+    setSelectedNode(node);
+    setShowFileModal(true);
+  }, [setSelectedNode, setShowFileModal]);
 
-    let context = "### ARCHITECTURAL INTELLIGENCE SNAPSHOT\n";
-    context += `Project Context: ProjectGrapher AI\n`;
-    context += `Tech Stack: ${Array.from(stack).join(', ') || 'Standard Node.js/Web'}\n`;
-    context += `Scale: ${projectData.files.length} Analyzed Modules\n\n`;
+  const getAIDocumentExports = useCallback(() => {
+    if (!aiReview) return [];
 
-    context += "### ESTRUCTURA DE DIRECTORIOS\n";
-    const tree = buildFileTree(projectData.files);
-    context += generateTreeText(tree) + "\n";
+    return [
+      { filename: `${projectName}_vision_ai.md`, content: generateAIVisionDocument() },
+      { filename: `${projectName}_architecture_narrative_ai.md`, content: generateAIArchitectureNarrative() },
+      { filename: `${projectName}_refactor_priorities_ai.md`, content: generateAIRefactorPriorities() },
+      { filename: `${projectName}_agent_handoff_ai.md`, content: generateAIAgentHandoff(agentTask) }
+    ].filter((file) => file.content.trim().length > 0);
+  }, [
+    aiReview,
+    projectName,
+    agentTask,
+    generateAIVisionDocument,
+    generateAIArchitectureNarrative,
+    generateAIRefactorPriorities,
+    generateAIAgentHandoff
+  ]);
 
-    context += "### MODULE LAYER OVERVIEW\n";
-    // Group by top-level directory to show functional layers (MVC, etc)
-    const layers: Record<string, string[]> = {};
-    projectData.files.forEach(f => {
-      const parts = f.path.split('/');
-      const layer = parts.length > 1 ? parts[0] : 'root';
-      if (!layers[layer]) layers[layer] = [];
-      if (layers[layer].length < 10) layers[layer].push(f.name);
-    });
-    
-    Object.entries(layers).forEach(([layer, files]) => {
-      context += `- [${layer.toUpperCase()}]: ${files.join(', ')}${files.length >= 10 ? '...' : ''}\n`;
-    });
+  const saveFilesToContext = useCallback(async (files: { filename: string; content: string }[], mode: 'auto' | 'manual' = 'manual') => {
+    if (!files.length) return;
 
-    context += "\n### STRATEGIC CLASS/FILE RELATIONSHIPS\n";
-    projectData.nodes.forEach(n => {
-      const deps = projectData.links
-        .filter(l => {
-          const sId = typeof l.source === 'object' ? (l.source as any).id : l.source;
-          return sId === n.id;
-        })
-        .map(l => {
-          const tId = typeof l.target === 'object' ? (l.target as any).id : l.target;
-          const targetNode = projectData.nodes.find(node => node.id === tId);
-          return targetNode?.label || tId;
-        });
+    setIsSavingAIDocs(true);
+    if (mode === 'manual') {
+      setAIDocsSaveStatus(null);
+    }
 
-      if (deps.length > 0) {
-        context += `[${n.label}] calls -> (${deps.join(', ')})\n`;
+    try {
+      const response = await fetch('/api/context/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files })
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || payload.error || 'No se pudieron guardar los documentos IA en contexto/');
       }
-    });
 
-    context += "\n### KEY SOURCE CODE (COMPRESSED TOP 12)\n";
-    const keyFiles = [...projectData.files]
-      .sort((a, b) => (b.importance || 0) - (a.importance || 0))
-      .slice(0, 12);
+      setAIDocsSaveStatus(`Guardados en contexto/: ${payload.saved.join(', ')}`);
+    } catch (error: any) {
+      console.error('Error saving AI docs to contexto:', error);
+      setAIDocsSaveStatus(error.message || 'No se pudieron guardar los documentos IA en contexto/');
+    } finally {
+      setIsSavingAIDocs(false);
+    }
+  }, []);
 
-    keyFiles.forEach(f => {
-      const lines = f.content.split('\n');
-      // For very large projects, we compress code by removing comments for the snapshot
-      const compressedCode = lines
-        .filter(line => !line.trim().startsWith('//') && !line.trim().startsWith('/*'))
-        .slice(0, 80)
-        .join('\n');
-        
-      context += `\n--- SOURCE: ${f.path} ---\n\`\`\`${f.ext.replace('.', '')}\n${compressedCode}${lines.length > 80 ? '\n// ... code continues (truncated for efficiency)' : ''}\n\`\`\`\n`;
-    });
+  useEffect(() => {
+    if (!aiReview) {
+      lastAutoSavedReviewRef.current = null;
+      return;
+    }
 
-    context += "\n### AI INSTRUCTIONS:\n";
-    context += "1. Analyze these layers to propose modular improvements.\n";
-    context += "2. Reference internal dependencies to maintain data integrity.\n";
+    if (lastAutoSavedReviewRef.current === aiReview) {
+      return;
+    }
 
-    return context;
+    const files = getAIDocumentExports();
+    if (!files.length) return;
+
+    lastAutoSavedReviewRef.current = aiReview;
+    void saveFilesToContext(files, 'auto');
+  }, [aiReview, getAIDocumentExports, saveFilesToContext]);
+
+  const handleDownloadFile = (content: string, filename: string, type: string) => {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const copyToClipboard = () => {
@@ -425,159 +208,190 @@ ${context}`,
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const openPanelTab = (tab: 'details' | 'context' | 'files' | 'ia' | 'settings') => {
+    setActiveTab(tab);
+    if (!isDesktopLayout) {
+      setShowMobilePanel(true);
+    }
+  };
+
+  const taskPackData = generateTaskPackData(agentTask);
+  const taskPackPreview = generateTaskPack(agentTask);
+
   if (!projectData) {
     return (
-      <div className="min-h-screen bg-brand-bg relative overflow-hidden flex items-center justify-center p-6">
-        {/* Background Gradients */}
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-brand-primary/10 blur-[120px] rounded-full" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-brand-secondary/10 blur-[120px] rounded-full" />
-        
-        <motion.div 
+      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-brand-bg p-4 sm:p-6">
+        <div className="absolute left-[-10%] top-[-10%] h-[40%] w-[40%] rounded-full bg-brand-primary/10 blur-[120px]" />
+        <div className="absolute bottom-[-10%] right-[-10%] h-[40%] w-[40%] rounded-full bg-brand-secondary/10 blur-[120px]" />
+
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="max-w-3xl w-full text-center relative z-10"
+          className="relative z-10 w-full max-w-3xl text-center"
         >
           <div className="mb-12 inline-block relative">
             <div className="absolute -inset-4 bg-brand-primary/20 blur-xl rounded-full animate-pulse" />
-            <Network className="w-24 h-24 text-brand-primary animate-float" strokeWidth={1} />
-            <div className="absolute -bottom-2 -right-2 p-3 bg-brand-surface border border-gray-800 rounded-2xl shadow-2xl">
-              <Code2 className="w-8 h-8 text-brand-secondary" />
+            <Network className="h-16 w-16 text-brand-primary animate-float sm:h-20 sm:w-20 lg:h-24 lg:w-24" strokeWidth={1} />
+            <div className="absolute -bottom-2 -right-2 rounded-2xl border border-gray-800 bg-brand-surface p-2 shadow-2xl sm:p-3">
+              <Code2 className="h-6 w-6 text-brand-secondary sm:h-8 sm:w-8" />
             </div>
           </div>
 
-          <h1 className="text-6xl font-display font-bold tracking-tight text-white mb-6">
+          <h1 className="mb-6 text-4xl font-bold tracking-tight text-white font-display sm:text-5xl lg:text-6xl">
             ProjectGrapher <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-primary to-brand-secondary">AI</span>
           </h1>
-          
-          <p className="text-xl text-gray-400 font-sans mb-12 max-w-xl mx-auto leading-relaxed">
+
+          <p className="mx-auto mb-10 max-w-xl text-base leading-relaxed text-gray-400 font-sans sm:text-lg lg:mb-12 lg:text-xl">
             Analiza la arquitectura de tu proyecto localmente. Visualiza dependencias y genera prompts eficientes para tus agentes de IA.
           </p>
 
-          <div className="relative max-w-sm ml-auto group mr-auto">
-            <div className="absolute -inset-1 bg-gradient-to-r from-brand-primary to-brand-secondary rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-500" />
-            <label className={cn(
-              "relative flex flex-col items-center justify-center p-12 border-2 border-dashed rounded-2xl cursor-pointer transition-all duration-300",
-              "bg-brand-surface/50 border-gray-800 hover:border-brand-primary/50 hover:bg-brand-surface/80",
-              isProcessing && "pointer-events-none"
-            )}>
-              {isProcessing ? (
-                <div className="flex flex-col items-center gap-4">
-                  <Play className="w-12 h-12 text-brand-primary animate-spin" />
-                  <p className="text-lg font-medium text-white">Indexando Carpeta...</p>
-                  <p className="text-sm text-gray-500 text-center px-4">
-                    Limpiando archivos de dependencias y analizando solo tu código fuente...
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <Upload className="w-12 h-12 text-gray-500 mb-4 group-hover:text-brand-primary transition-colors" />
-                  <p className="text-lg font-medium text-white mb-2">Seleccionar Carpeta</p>
-                  <p className="text-sm text-gray-400 text-center px-4 mb-4">
-                    Ignora automáticamente node_modules, dist y builds.
-                  </p>
-                  <div className="flex flex-col items-center gap-2">
-                    <div className="px-3 py-1.5 bg-gray-800 rounded-lg text-[10px] text-gray-500 font-mono flex items-center gap-2">
-                      <Info className="w-3 h-3" />
-                      PROCESAMIENTO LOCAL
+          <div className="flex flex-col items-center gap-6">
+            <div className="relative max-w-sm group w-full">
+              <div className="absolute -inset-1 bg-gradient-to-r from-brand-primary to-brand-secondary rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-500" />
+              <label className={cn(
+                "relative flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-8 transition-all duration-300 sm:p-10 lg:p-12",
+                "bg-brand-surface/50 border-gray-800 hover:border-brand-primary/50 hover:bg-brand-surface/80",
+                isProcessing && "pointer-events-none"
+              )}>
+                {isProcessing ? (
+                  <div className="flex flex-col items-center gap-4">
+                    <Loader2 className="w-12 h-12 text-brand-primary animate-spin" />
+                    <p className="text-lg font-medium text-white">Indexando Carpeta...</p>
+                    <div className="flex items-center gap-2 px-3 py-1 bg-brand-primary/10 border border-brand-primary/20 rounded-full">
+                      <Database className="w-3 h-3 text-brand-primary" />
+                      <span className="text-[10px] font-bold text-brand-primary uppercase tracking-widest">Motor Local Activo (Sin IA)</span>
                     </div>
-                    <p className="text-[9px] text-amber-500/60 font-bold uppercase tracking-tighter">
-                      * El navegador pedirá confirmación de seguridad
-                    </p>
                   </div>
-                  <input 
-                    type="file" 
-                    className="hidden" 
-                    // @ts-ignore
-                    webkitdirectory="true" 
-                    directory="true" 
-                    multiple 
-                    onChange={handleFileUpload} 
-                  />
-                </>
-              )}
-            </label>
+                ) : (
+                  <>
+                    <Upload className="w-12 h-12 text-gray-500 mb-4 group-hover:text-brand-primary transition-colors" />
+                    <p className="mb-2 text-base font-medium text-white sm:text-lg">Seleccionar Carpeta</p>
+                    <input
+                      type="file"
+                      className="hidden"
+                      // @ts-ignore
+                      webkitdirectory="true"
+                      directory="true"
+                      multiple
+                      onChange={(e) => e.target.files && processFiles(e.target.files)}
+                    />
+                  </>
+                )}
+              </label>
+            </div>
+
+            <button
+              onClick={() => setShowSettingsModal(true)}
+              className="flex items-center gap-2 text-gray-500 hover:text-white transition-colors text-sm font-medium"
+            >
+              <Sparkles className="w-4 h-4" /> Configurar Proveedor de IA
+            </button>
           </div>
 
-          <div className="mt-16 flex items-center justify-center gap-8 grayscale opacity-50 group-hover:grayscale-0 group-hover:opacity-100 transition-all">
-             <div className="flex items-center gap-2 text-xs font-mono text-gray-500">
-               <div className="w-1.5 h-1.5 rounded-full bg-brand-primary" />
-               D3.js POWERED
-             </div>
-             <div className="flex items-center gap-2 text-xs font-mono text-gray-500">
-               <div className="w-1.5 h-1.5 rounded-full bg-brand-secondary" />
-               TOKEN OPTIMIZED
-             </div>
-             <div className="flex items-center gap-2 text-xs font-mono text-gray-500">
-               <div className="w-1.5 h-1.5 rounded-full bg-orange-500" />
-               CROSS-PLATFORM
-             </div>
-          </div>
+          <Modal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} title="Configuración de IA">
+            <div className="space-y-6">
+              <AIConfig />
+              <button
+                onClick={() => setShowSettingsModal(false)}
+                className="w-full py-4 bg-brand-primary text-white rounded-2xl font-bold hover:brightness-110 transition-all"
+              >
+                Guardar y Cerrar
+              </button>
+            </div>
+          </Modal>
         </motion.div>
       </div>
     );
   }
 
+
   return (
-    <div className="h-screen bg-brand-bg flex flex-col md:flex-row overflow-hidden font-sans">
-      
-      {/* Mobile Top Bar */}
-      <div className="md:hidden h-16 border-b border-gray-800 bg-brand-bg/80 backdrop-blur-md flex items-center justify-between px-6 z-[60] shrink-0">
-        <div className="flex items-center gap-2">
-           <Network className="w-6 h-6 text-brand-primary" />
-           <span className="font-display font-bold text-white tracking-widest text-[10px]">PROJECTGRAPHER</span>
+    <div className="flex w-full min-h-screen flex-col overflow-x-hidden bg-brand-bg font-sans pb-[calc(env(safe-area-inset-bottom)+4.5rem)] lg:h-screen lg:flex-row lg:overflow-hidden lg:pb-0">
+
+      {/* Compact Top Bar */}
+      <div className="sticky top-0 z-40 flex h-16 w-full shrink-0 items-center justify-between border-b border-gray-800 bg-brand-bg/90 px-4 backdrop-blur-md sm:px-6 lg:hidden">
+        <div className="flex min-w-0 items-center gap-3">
+          <Network className="w-6 h-6 text-brand-primary" />
+          <div className="min-w-0">
+            <span className="block truncate text-[10px] font-bold tracking-widest text-white font-display">PROJECTGRAPHER</span>
+            <span className="block truncate text-[10px] text-gray-500">{projectName}</span>
+          </div>
         </div>
-        <button 
-           onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-           className="p-2 text-gray-500 hover:text-white"
-        >
-          {isMobileMenuOpen ? <X className="w-6 h-6" /> : <LayoutDashboard className="w-6 h-6" />}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsFocusMode(!isFocusMode)}
+            className={cn(
+              "rounded-xl border px-3 py-2 text-[10px] font-bold transition-all",
+              isFocusMode ? "border-brand-primary bg-brand-primary text-white" : "border-gray-800 text-gray-400"
+            )}
+          >
+            Focus {isFocusMode ? 'On' : 'Off'}
+          </button>
+          <button
+            onClick={generateAIReview}
+            disabled={isReviewing || !hasEffectiveKey}
+            className={cn(
+              "rounded-xl px-3 py-2 text-[10px] font-bold transition-all",
+              isReviewing || !hasEffectiveKey
+                ? "bg-gray-800 text-gray-500"
+                : "bg-brand-primary text-white"
+            )}
+          >
+            IA
+          </button>
+        </div>
       </div>
 
       {/* Sidebar Navigation */}
       <nav className={cn(
-        "fixed inset-y-0 left-0 z-50 w-64 bg-brand-surface border-r border-gray-800 flex flex-col py-6 gap-2 transform transition-transform duration-300 md:relative md:w-16 md:transform-none md:flex md:items-center",
-        isMobileMenuOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full md:translate-x-0"
+        "fixed inset-x-0 bottom-0 z-50 flex w-full items-center gap-2 border-t border-gray-800 bg-brand-surface/95 px-2 py-2 backdrop-blur-xl lg:relative lg:inset-auto lg:w-20 lg:flex-col lg:justify-start lg:gap-2 lg:border-r lg:border-t-0 lg:bg-brand-surface lg:px-4 lg:py-6"
       )}>
-        <div className="hidden md:block p-2 bg-brand-primary/10 rounded-xl mb-4">
+        <div className="hidden rounded-xl bg-brand-primary/10 p-2 lg:mb-4 lg:block">
           <Network className="w-8 h-8 text-brand-primary" />
         </div>
-        
-        <div className="flex flex-col gap-2 w-full px-4 md:px-0">
-          <NavItem 
-            active={activeTab === 'details'} 
-            onClick={() => { setActiveTab('details'); setIsMobileMenuOpen(false); }}
+
+        <div className="flex w-full min-w-0 flex-row gap-1 overflow-x-auto pb-[env(safe-area-inset-bottom)] lg:flex-col lg:gap-2 lg:overflow-visible lg:px-0 lg:pb-0">
+          <NavItem
+            active={activeTab === 'details'}
+            onClick={() => openPanelTab('details')}
             icon={<LayoutDashboard className="w-6 h-6" />}
             label="Dashboard"
             mobile={true}
           />
-          <NavItem 
-            active={activeTab === 'files'} 
-            onClick={() => { setActiveTab('files'); setIsMobileMenuOpen(false); }}
+          <NavItem
+            active={activeTab === 'files'}
+            onClick={() => openPanelTab('files')}
             icon={<Folder className="w-6 h-6" />}
             label="Archivos"
             mobile={true}
           />
-          <NavItem 
-            active={activeTab === 'ia'} 
-            onClick={() => { setActiveTab('ia'); setIsMobileMenuOpen(false); }}
+          <NavItem
+            active={activeTab === 'ia'}
+            onClick={() => openPanelTab('ia')}
             icon={<Sparkles className={cn("w-6 h-6", isReviewing && "animate-pulse")} />}
             label="Arquitectura AI"
             mobile={true}
             badge={isReviewing}
           />
-          <NavItem 
-            active={activeTab === 'context'} 
-            onClick={() => { setActiveTab('context'); setIsMobileMenuOpen(false); }}
+          <NavItem
+            active={activeTab === 'context'}
+            onClick={() => openPanelTab('context')}
             icon={<Database className="w-6 h-6" />}
-            label="Contexto AI"
+            label="Contexto Prompt"
+            mobile={true}
+          />
+          <NavItem
+            active={activeTab === 'settings'}
+            onClick={() => openPanelTab('settings')}
+            icon={<Settings className="w-6 h-6" />}
+            label="Configuración"
             mobile={true}
           />
         </div>
 
-        <div className="mt-auto flex flex-col gap-4 items-center w-full px-4 md:px-0">
-          <button 
-            onClick={handleAIReview}
+        <div className="mt-auto hidden w-full flex-col items-center gap-4 px-4 lg:flex lg:px-0">
+          <button
+            onClick={() => { generateAIReview(); setShowIAModal(true); }}
             disabled={isReviewing}
             className={cn(
               "p-3 rounded-xl transition-all border border-gray-800 flex items-center justify-center gap-3 w-full md:w-auto",
@@ -587,20 +401,20 @@ ${context}`,
             {isReviewing ? <Loader2 className="w-6 h-6 animate-spin" /> : <BarChart3 className="w-6 h-6" />}
             <span className="md:hidden font-bold">Generar Reporte AI</span>
           </button>
-          <button 
-            onClick={() => setProjectData(null)}
-            className="p-3 text-gray-500 hover:text-red-400 transition-colors flex items-center justify-center gap-3 w-full md:w-auto"
+          <button
+            onClick={async () => await closeProject()}
+            className="p-3 text-gray-500 hover:text-red-400 hover:bg-red-400/10 rounded-xl transition-all flex items-center justify-center gap-3 w-full md:w-auto"
+            title="Cerrar Proyecto"
           >
-            <X className="w-6 h-6" />
-            <span className="md:hidden font-bold">Cerrar Proyecto</span>
+            <LogOut className="w-6 h-6" />
+            <span className="md:hidden font-bold">Salir del Proyecto</span>
           </button>
         </div>
       </nav>
 
       {/* Main Content Area */}
-      <main className="flex-1 flex flex-col relative overflow-hidden h-full">
-        {/* Header Bar */}
-        <header className="hidden md:flex h-16 border-b border-gray-800 items-center justify-between px-6 bg-brand-bg/80 backdrop-blur-md z-10 shrink-0">
+      <main className="flex w-full min-w-0 min-h-0 flex-1 flex-col lg:pb-0 lg:overflow-hidden">
+        <header className="hidden h-16 shrink-0 items-center justify-between border-b border-gray-800 bg-brand-bg/80 px-6 backdrop-blur-md lg:flex">
           <div className="flex items-center gap-4">
             <h2 className="text-sm font-display font-bold tracking-wider text-white uppercase opacity-70">
               Architectural Layer
@@ -614,15 +428,15 @@ ${context}`,
                 </span>
                 {skippedCount > 0 && (
                   <span className="text-[10px] font-mono text-gray-400 bg-gray-800/80 px-2 py-0.5 rounded border border-gray-700/50">
-                    {skippedCount.toLocaleString()} Ignored (Modules/Dist/Build)
+                    {skippedCount.toLocaleString()} Ignored
                   </span>
                 )}
               </div>
             </div>
           </div>
-          
+
           <div className="flex items-center gap-6">
-            <button 
+            <button
               onClick={() => setIsFocusMode(!isFocusMode)}
               className={cn(
                 "flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[10px] font-bold transition-all whitespace-nowrap",
@@ -634,8 +448,8 @@ ${context}`,
             </button>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-              <input 
-                type="text" 
+              <input
+                type="text"
                 placeholder="Search nodes..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -645,651 +459,663 @@ ${context}`,
           </div>
         </header>
 
-        {/* Graph Display */}
-        <div className="flex-1 relative">
-           <ErrorBoundary category="Grafo Interactivo">
-             <GraphCanvas 
-               nodes={filteredNodes} 
-               links={projectData.links} 
-               onNodeClick={(node) => {
-                 setSelectedNode(node);
-                 setShowFileModal(true);
-               }}
-               selectedNodeId={selectedNode?.id || null}
-               isFocusMode={isFocusMode}
-             />
-           </ErrorBoundary>
-           
-           {/* Graph Overlay UI */}
-           <div className="absolute bottom-6 left-6 flex flex-col gap-2">
-             <div className="bg-brand-surface/90 backdrop-blur-sm border border-gray-800 p-3 rounded-xl shadow-2xl flex items-center gap-4">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-[#f59e0b]" />
-                  <span className="text-[10px] uppercase font-mono text-gray-400">Logic</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-[#3b82f6]" />
-                  <span className="text-[10px] uppercase font-mono text-gray-400">Static</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-[#10b981]" />
-                  <span className="text-[10px] uppercase font-mono text-gray-400">Python</span>
-                </div>
-             </div>
-           </div>
+        <div className="w-full border-b border-gray-800 px-4 py-2.5 sm:px-5 lg:hidden">
+          <div className="mb-2.5 flex flex-col gap-2.5">
+            <div className="min-w-0">
+              <h2 className="truncate text-base font-bold text-white sm:text-lg">{projectName || 'Dashboard'}</h2>
+              <p className="text-[10px] uppercase tracking-[0.16em] text-gray-500">
+                {projectData.files.length} nodos cargados{skippedCount > 0 ? ` • ${skippedCount.toLocaleString()} ignorados` : ''}
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:max-w-xs">
+              <div className="rounded-2xl border border-gray-800 bg-brand-surface/60 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-widest text-gray-500">Archivos</div>
+                <div className="text-base font-bold text-white">{projectData.files.length}</div>
+              </div>
+              <div className="rounded-2xl border border-gray-800 bg-brand-surface/60 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-widest text-gray-500">Relaciones</div>
+                <div className="text-base font-bold text-white">{projectData.links.length}</div>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2.5 sm:flex-row">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+              <input
+                type="text"
+                placeholder="Buscar nodos..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full rounded-2xl border border-gray-800 bg-brand-surface py-2.5 pl-10 pr-4 text-sm text-white focus:outline-none focus:border-brand-primary"
+              />
+            </div>
+            <button
+              onClick={() => setIsFocusMode(!isFocusMode)}
+              className={cn(
+                "rounded-2xl border px-4 py-2.5 text-sm font-bold transition-all sm:min-w-[150px]",
+                isFocusMode ? "border-brand-primary bg-brand-primary text-white" : "border-gray-800 text-gray-400"
+              )}
+            >
+              Focus {isFocusMode ? 'On' : 'Off'}
+            </button>
+          </div>
+        </div>
+
+        <div className="relative h-[calc(100svh-11.5rem)] w-full min-w-0 flex-none md:h-[calc(100svh-11rem)] lg:h-auto lg:min-h-0 lg:flex-1">
+          <ErrorBoundary category="Grafo Interactivo">
+            <GraphCanvas
+              nodes={filteredNodes}
+              links={projectData.links}
+              onNodeClick={handleGraphNodeClick}
+              selectedNodeId={selectedNode?.id || null}
+              isFocusMode={isFocusMode}
+            />
+          </ErrorBoundary>
         </div>
       </main>
 
-      {/* Right Intelligence Sidebar */}
-      <aside className={cn(
-         "w-full h-full md:w-[400px] border-l border-gray-800 bg-brand-surface flex flex-col z-20 absolute inset-0 md:relative md:inset-auto transform transition-transform duration-300 xl:translate-x-0 shrink-0",
-         activeTab ? "translate-x-0" : "translate-x-full"
-      )}>
-        {/* Mobile Close Tab Button */}
-        <div className="md:hidden flex p-4 border-b border-gray-800 bg-brand-bg items-center justify-between">
-           <span className="font-bold text-white uppercase text-xs tracking-widest">{activeTab}</span>
-           <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 text-gray-500"><X className="w-5 h-5" /></button>
+      {/* Right Sidebar */}
+      <aside
+        className={cn(
+          "fixed inset-x-0 top-16 bottom-[calc(env(safe-area-inset-bottom)+4.5rem)] z-30 flex min-w-0 flex-col border-t border-gray-800 bg-brand-surface transition-transform duration-300 lg:relative lg:inset-auto lg:top-auto lg:bottom-auto lg:z-auto lg:min-h-0 lg:w-[360px] lg:shrink-0 lg:border-l lg:border-t-0 xl:w-[400px] 2xl:w-[440px]",
+          isDesktopLayout ? "translate-y-0" : (showMobilePanel ? "translate-y-0" : "translate-y-[105%]")
+        )}
+      >
+        <div className="flex items-center justify-between border-b border-gray-800 bg-brand-bg px-4 py-4 sm:px-6 lg:hidden">
+          <span className="text-xs font-bold uppercase tracking-widest text-white">{activeTab}</span>
+          <button
+            onClick={() => setShowMobilePanel(false)}
+            className="rounded-xl border border-gray-800 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-gray-400"
+          >
+            Cerrar
+          </button>
         </div>
+
         <AnimatePresence mode="wait">
           {activeTab === 'details' && (
-            <motion.div 
-              key="details"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="flex-1 flex flex-col h-full"
-            >
+            <motion.div key="details" className="flex-1 flex flex-col h-full overflow-hidden">
               {selectedNode ? (
                 <div className="flex-1 flex flex-col h-full overflow-hidden">
-                  <div className="p-6 border-b border-gray-800">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="p-2 bg-brand-primary/10 rounded-lg">
-                        <FileText className="w-5 h-5 text-brand-primary" />
-                      </div>
-                      <span className="text-[10px] font-mono text-gray-500 uppercase tracking-widest bg-gray-800 px-2 py-0.5 rounded">
-                        {(selectedNode.data.size / 1024).toFixed(1)} KB
-                      </span>
-                    </div>
+                  <div className="border-b border-gray-800 p-4 sm:p-6">
                     <h3 className="text-xl font-bold text-white mb-1 break-all">{selectedNode.label}</h3>
                     <p className="text-xs text-gray-500 font-mono opacity-50 truncate">{selectedNode.id}</p>
                   </div>
-
-                  <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-8">
-                    {/* Architectural Role Stats */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-brand-bg/50 border border-gray-800 p-4 rounded-2xl group transition-all hover:border-brand-primary/30">
-                        <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2 flex items-center gap-1.5 font-display">
-                          <Network className="w-3 h-3" /> Centralidad
-                        </div>
-                        <div className="text-2xl font-mono font-bold text-brand-primary">
-                          {selectedNode.data.importance}
-                          <span className="text-xs text-gray-600 ml-1 font-normal">deps</span>
-                        </div>
+                  <div className="custom-scrollbar flex-1 overflow-y-auto space-y-6 p-4 sm:p-6">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="bg-brand-bg/50 border border-gray-800 p-4 rounded-2xl">
+                        <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Centralidad</div>
+                        <div className="text-2xl font-mono font-bold text-brand-primary">{selectedNode.data.importance}</div>
                       </div>
-                      <div className="bg-brand-bg/50 border border-gray-800 p-4 rounded-2xl group transition-all hover:border-brand-secondary/30">
-                        <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2 flex items-center gap-1.5 font-display">
-                          <Database className="w-3 h-3" /> Extensión
-                        </div>
-                        <div className="text-2xl font-mono font-bold text-brand-secondary lowercase">
-                          {selectedNode.group}
-                        </div>
+                      <div className="bg-brand-bg/50 border border-gray-800 p-4 rounded-2xl">
+                        <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Tipo</div>
+                        <div className="text-2xl font-mono font-bold text-brand-secondary lowercase">{selectedNode.group}</div>
                       </div>
                     </div>
-
-                    <button 
+                    <button
                       onClick={() => setShowFileModal(true)}
                       className="w-full py-4 bg-white/5 border border-white/10 rounded-2xl text-white font-bold hover:bg-white/10 transition-all flex items-center justify-center gap-2"
                     >
-                      <Info className="w-4 h-4 text-brand-primary" />
-                      Ver Ficha Completa
+                      <Info className="w-4 h-4 text-brand-primary" /> Ver Ficha Completa
                     </button>
-
-                    <div>
-                      <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-4 flex items-center gap-2 font-display">
-                        <Share2 className="w-3 h-3 text-brand-primary" /> Referencias Directas
-                      </h4>
-                      <div className="space-y-2">
-                        {projectData.links.filter(l => {
-                          const sId = typeof l.source === 'string' ? l.source : (l.source as any).id;
-                          return sId === selectedNode.id;
-                        }).length === 0 ? (
-                           <div className="text-sm text-gray-600 italic border border-dashed border-gray-800 p-4 rounded-2xl text-center flex flex-col items-center gap-2">
-                             <div className="w-8 h-8 rounded-full bg-gray-900 flex items-center justify-center">
-                                <Info className="w-4 h-4" />
-                             </div>
-                             Nodo Terminal (Sin dependencias internas)
-                           </div>
-                        ) : (
-                          projectData.links
-                            .filter(l => {
-                              const sId = typeof l.source === 'string' ? l.source : (l.source as any).id;
-                              return sId === selectedNode.id;
-                            })
-                            .map((l, i) => {
-                              const target = projectData.nodes.find(n => n.id === ((l.target as any).id || (l.target as any)));
-                              return (
-                                <button 
-                                  key={i} 
-                                  onClick={() => target && setSelectedNode(target)}
-                                  className="w-full flex items-center justify-between gap-3 text-sm text-gray-300 bg-brand-bg/50 p-3 rounded-xl border border-gray-800/50 hover:border-brand-primary/50 hover:bg-brand-primary/5 transition-all text-left group/item"
-                                >
-                                  <div className="flex items-center gap-2 truncate">
-                                    <ChevronRight className="w-3 h-3 text-brand-primary group-hover/item:translate-x-1 transition-transform" />
-                                    <span className="truncate font-medium">{target?.label || 'Módulo Externo'}</span>
-                                  </div>
-                                  <div className="text-[10px] text-gray-600 font-mono opacity-0 group-hover/item:opacity-100 transition-opacity">
-                                    VER NODO
-                                  </div>
-                                </button>
-                              );
-                            })
-                        )}
-                      </div>
-                    </div>
-
-                    <div>
-                      <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-4 flex items-center gap-2">
-                         <FileText className="w-3 h-3" /> Código Fuente
-                      </h4>
-                      <div className="bg-brand-bg rounded-xl border border-gray-800 p-4 font-mono text-[11px] text-gray-400 overflow-hidden relative group">
-                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                           <div className="text-[8px] bg-gray-800 px-1.5 py-0.5 rounded text-gray-500">READONLY</div>
-                        </div>
-                        <pre className="whitespace-pre overflow-x-auto custom-scrollbar max-h-[400px] leading-relaxed">
-                          {selectedNode.data.content.split('\n').slice(0, 100).join('\n')}
-                          {selectedNode.data.content.split('\n').length > 100 && '\n\n// ... Código truncado por visualización'}
-                        </pre>
-                      </div>
-                    </div>
                   </div>
                 </div>
               ) : (
-                <div className="flex-1 flex flex-col p-8 overflow-y-auto custom-scrollbar">
-                  <div className="mb-12">
-                     <div className="flex items-center gap-2 mb-2">
-                        <h3 className="text-2xl font-bold text-white font-display">Dashboard Arquitectónico</h3>
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-500 font-bold border border-green-500/20">LOCAL SCAN</span>
-                     </div>
-                     <p className="text-sm text-gray-500">Métricas clave procesadas localmente por el motor de análisis.</p>
+                <div className="space-y-6 p-4 sm:p-6 lg:p-7 xl:p-8">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <h3 className="text-2xl font-bold text-white">{projectName || 'Dashboard'}</h3>
+                    <div className="px-3 py-1 bg-brand-secondary/20 text-brand-secondary text-[10px] font-bold rounded-full uppercase">
+                      Graph Engine Active
+                    </div>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-4 mb-12">
-                     <div className="bg-brand-bg/50 border border-gray-800 p-6 rounded-3xl group transition-all hover:border-brand-primary/30 relative overflow-hidden">
-                        <div className="flex items-center justify-between mb-4">
-                           <div className="w-10 h-10 rounded-2xl bg-brand-primary/10 flex items-center justify-center text-brand-primary">
-                              <Activity className="w-5 h-5" />
-                           </div>
-                           <div className="text-[10px] font-mono text-gray-600">OVERALL HEALTH</div>
-                        </div>
-                        <div className="text-3xl font-bold text-white mb-1">
-                           {calculateAAMetrics(projectData.files, projectData.links).architectureHealth}
-                        </div>
-                        <p className="text-xs text-gray-500">Estado basado en densidad de acoplamiento.</p>
-                        <div className="absolute -bottom-4 -right-4 w-24 h-24 bg-brand-primary/5 rounded-full blur-2xl group-hover:bg-brand-primary/10 transition-all" />
-                     </div>
+                  <div className="grid grid-cols-1 gap-4">
+                    <div className="bg-brand-bg/50 border border-gray-800 p-6 rounded-3xl">
+                      <div className="text-xs text-gray-500 mb-1">Salud Arquitectónica</div>
+                      <div className="mb-2 text-2xl font-bold text-white sm:text-3xl">
+                        {architectureMetrics?.architectureHealth}
+                      </div>
+                      <div className="flex items-center gap-2 text-[10px] text-gray-500 font-mono">
+                        <Activity className="w-3 h-3" />
+                        COMPLEXITY INDEX: {architectureMetrics?.complexityAvg}
+                      </div>
+                    </div>
 
-                     <div className="grid grid-cols-2 gap-4">
-                        <div className="bg-brand-bg/50 border border-gray-800 p-6 rounded-3xl">
-                           <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2">Líneas de Código</div>
-                           <div className="text-2xl font-mono font-bold text-white">
-                              {calculateAAMetrics(projectData.files, projectData.links).totalLines.toLocaleString()}
-                           </div>
-                        </div>
-                        <div className="bg-brand-bg/50 border border-gray-800 p-6 rounded-3xl">
-                           <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2">Acoplamiento</div>
-                           <div className="text-2xl font-mono font-bold text-brand-secondary">
-                              {calculateAAMetrics(projectData.files, projectData.links).complexityAvg}
-                           </div>
-                        </div>
-                     </div>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div className="bg-brand-bg/50 border border-gray-800 p-4 rounded-2xl text-center">
+                        <div className="text-[10px] text-gray-500 uppercase mb-1">Archivos</div>
+                        <div className="text-xl font-bold text-white">{projectData.files.length}</div>
+                      </div>
+                      <div className="bg-brand-bg/50 border border-gray-800 p-4 rounded-2xl text-center">
+                        <div className="text-[10px] text-gray-500 uppercase mb-1">Relaciones</div>
+                        <div className="text-xl font-bold text-white">{projectData.links.length}</div>
+                      </div>
+                    </div>
                   </div>
 
-                  <div>
-                     <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-4 flex items-center gap-2 font-display">
-                        <BarChart3 className="w-3 h-3" /> Distribución de Tipos
-                     </h4>
-                     <div className="space-y-3">
-                        {Array.from(new Set(projectData.files.map(f => f.ext))).map((ext, i) => {
-                           const count = projectData.files.filter(f => f.ext === ext).length;
-                           const percentage = (count / projectData.files.length) * 100;
-                           return (
-                              <div key={i} className="space-y-1">
-                                 <div className="flex items-center justify-between text-xs">
-                                    <span className="text-gray-400 font-mono">{ext || 'other'}</span>
-                                    <span className="text-gray-600">{count} archivos</span>
-                                 </div>
-                                 <div className="h-1.5 w-full bg-gray-900 rounded-full overflow-hidden">
-                                    <div 
-                                       className="h-full bg-brand-primary opacity-60 rounded-full"
-                                       style={{ width: `${percentage}%` }}
-                                    />
-                                 </div>
-                              </div>
-                           );
-                        })}
-                     </div>
+                  <div className="bg-brand-bg/50 border border-gray-800 p-6 rounded-3xl relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
+                      <Database className="w-12 h-12 text-brand-primary" />
+                    </div>
+                    <h4 className="text-sm font-bold text-brand-primary mb-2 flex items-center gap-2">
+                      <Activity className="w-4 h-4" /> Análisis Arquitectónico Local
+                    </h4>
+                    <p className="text-xs text-gray-400 leading-relaxed relative z-10">
+                      Estás viendo un mapeo <strong className="font-semibold text-white">100% determinista</strong> generado mediante el análisis estático de dependencias (AST). Este proceso no utiliza IA, garantizando precisión técnica absoluta en la estructura del grafo.
+                    </p>
                   </div>
                 </div>
               )}
             </motion.div>
           )}
 
+          {activeTab === 'files' && (
+            <motion.div key="files" className="flex-1 flex flex-col h-full overflow-hidden">
+              <div className="border-b border-gray-800 p-4 sm:p-6">
+                <input
+                  type="text"
+                  placeholder="Buscar archivos..."
+                  value={treeSearch}
+                  onChange={(e) => setTreeSearch(e.target.value)}
+                  className="w-full bg-brand-bg/50 border border-gray-800 rounded-xl py-2 px-4 text-xs text-white"
+                />
+              </div>
+              <div className="flex-1 overflow-y-auto custom-scrollbar p-2">
+                {buildFileTree(projectData.files.filter(f => f.path.toLowerCase().includes(treeSearch.toLowerCase()))).map((node, i) => (
+                  <TreeItem
+                    key={i}
+                    node={node}
+                    level={0}
+                    onFileSelect={(file) => {
+                      const node = projectData.nodes.find(n => n.id === file.id);
+                      if (node) setSelectedNode(node);
+                      setShowFileModal(true);
+                    }}
+                    selectedId={selectedNode?.id || null}
+                  />
+                ))}
+              </div>
+            </motion.div>
+          )}
+
           {activeTab === 'context' && (
-            <motion.div 
-              key="context"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="flex-1 flex flex-col p-8 overflow-y-auto custom-scrollbar"
-            >
-              <div className="mb-12">
-                <h3 className="text-2xl font-bold text-white mb-2 font-display">Centro de Exportación</h3>
-                <p className="text-sm text-gray-400">Descarga los datos optimizados para otros agentes de IA.</p>
+            <motion.div key="context" className="flex-1 flex flex-col h-full overflow-hidden bg-brand-surface">
+              <div className="border-b border-gray-800 p-4 sm:p-6 lg:p-7 xl:p-8">
+                <h3 className="mb-2 text-2xl font-bold text-white font-display sm:text-3xl">Centro de Exportación</h3>
+                <p className="text-sm text-gray-500">Descarga los datos optimizados para otros agentes de IA.</p>
               </div>
 
-              <div className="grid grid-cols-1 gap-4 mb-12">
-                <div className="bg-brand-surface/50 border border-gray-800 p-6 rounded-3xl group transition-all hover:border-brand-primary/30">
-                   <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 bg-brand-primary/10 rounded-lg text-brand-primary">
-                          <Database className="w-5 h-5" />
-                        </div>
-                        <div>
-                          <h4 className="text-white font-bold text-sm">Contexto de Arquitectura</h4>
-                          <p className="text-[10px] text-gray-500">Prompt optimizado por tokens</p>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => handleDownloadFile(generateAIContext(), "arquitectura_contexto.txt", "text/plain")}
-                        className="p-2 hover:bg-white/5 rounded-lg text-gray-400 hover:text-white transition-colors"
-                      >
-                        <Download className="w-5 h-5" />
-                      </button>
-                   </div>
-                </div>
+              <div className="custom-scrollbar flex-1 overflow-y-auto space-y-8 p-4 sm:p-6 lg:p-7 xl:p-8">
+                <div className="space-y-4 border-b border-gray-800 pb-6">
+                  <div className="space-y-2">
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-primary">Agent Workbench</div>
+                    <h4 className="text-xl font-bold text-white font-display sm:text-2xl">Contexto preciso para programadores y agentes</h4>
+                    <p className="text-sm leading-relaxed text-gray-400">
+                      La meta es que otro agente entienda qu&eacute; hace el proyecto, d&oacute;nde vive cada parte y qu&eacute; archivos tocar para una tarea concreta, sin desperdiciar tokens.
+                    </p>
+                    <p className="text-xs font-medium text-brand-primary/90">
+                      Menos ruido, mejor contexto, decisiones m&aacute;s r&aacute;pidas.
+                    </p>
+                  </div>
 
-                <div className="bg-brand-surface/50 border border-gray-800 p-6 rounded-3xl group transition-all hover:border-brand-secondary/30">
-                   <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 bg-brand-secondary/10 rounded-lg text-brand-secondary">
-                          <Network className="w-5 h-5" />
-                        </div>
-                        <div>
-                          <h4 className="text-white font-bold text-sm">Grafo de Dependencias</h4>
-                          <p className="text-[10px] text-gray-500">JSON estructural</p>
-                        </div>
+                  <div className="space-y-3">
+                    <button
+                      onClick={() => handleDownloadFile(generateExecutiveView(), `${projectName}_executive_view.md`, 'text/markdown')}
+                      className="flex w-full items-center justify-between rounded-2xl border border-gray-800 bg-brand-bg/30 px-4 py-3 text-left transition-colors hover:border-sky-500/40"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-sm font-bold text-white">Executive View</div>
+                        <div className="text-xs text-gray-500">Qu&eacute; hace el proyecto y por d&oacute;nde empezar</div>
                       </div>
-                      <button 
-                        onClick={() => handleDownloadFile(JSON.stringify(projectData, null, 2), "proyecto_grafo.json", "application/json")}
-                        className="p-2 hover:bg-white/5 rounded-lg text-gray-400 hover:text-white transition-colors"
-                      >
-                        <Download className="w-5 h-5" />
-                      </button>
-                   </div>
+                      <span className="shrink-0 text-sm font-bold text-sky-400">Descargar</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleDownloadFile(generateSystemView(), `${projectName}_system_view.md`, 'text/markdown')}
+                      className="flex w-full items-center justify-between rounded-2xl border border-gray-800 bg-brand-bg/30 px-4 py-3 text-left transition-colors hover:border-violet-500/40"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-sm font-bold text-white">System View</div>
+                        <div className="text-xs text-gray-500">Capas, m&oacute;dulos y relaciones clave</div>
+                      </div>
+                      <span className="shrink-0 text-sm font-bold text-violet-400">Descargar</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleDownloadFile(generateHotspotReport(), `${projectName}_hotspots.md`, 'text/markdown')}
+                      className="flex w-full items-center justify-between rounded-2xl border border-gray-800 bg-brand-bg/30 px-4 py-3 text-left transition-colors hover:border-amber-500/40"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-sm font-bold text-white">Hotspots Report</div>
+                        <div className="text-xs text-gray-500">Archivos cr&iacute;ticos y deuda t&eacute;cnica visible</div>
+                      </div>
+                      <span className="shrink-0 text-sm font-bold text-amber-400">Descargar</span>
+                    </button>
+                  </div>
                 </div>
 
                 {aiReview && (
-                  <div className="bg-brand-surface/50 border border-brand-primary/20 p-6 rounded-3xl group transition-all hover:border-brand-primary/50">
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className="p-2 bg-brand-primary/10 rounded-lg text-brand-primary">
-                            <Sparkles className="w-5 h-5" />
-                          </div>
-                          <div>
-                            <h4 className="text-white font-bold text-sm">Reporte Auditoría Pro</h4>
-                            <p className="text-[10px] text-gray-500">Markdown (.md)</p>
-                          </div>
-                        </div>
-                        <button 
-                          onClick={() => handleDownloadFile(aiReview, "auditoria_ia.md", "text/markdown")}
-                          className="p-2 hover:bg-white/5 rounded-lg text-gray-400 hover:text-white transition-colors"
+                  <div className="space-y-4 border-b border-gray-800 pb-6">
+                    <div className="space-y-2">
+                      <div className="text-[10px] font-black uppercase tracking-[0.24em] text-fuchsia-400">Documentos IA</div>
+                      <h4 className="text-lg font-bold text-white sm:text-xl">Lecturas automáticas para handoff</h4>
+                      <p className="text-sm leading-relaxed text-gray-400">
+                        Estos documentos aparecen cuando ya existe auditor&iacute;a IA. Mezclan la lectura del modelo con el grafo y el contexto local para producir handoffs m&aacute;s humanos.
+                      </p>
+                    </div>
+
+                    <div className="space-y-3 rounded-2xl border border-fuchsia-500/15 bg-fuchsia-500/5 p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-xs leading-relaxed text-gray-300">
+                          Cuando se genera la auditor&iacute;a IA, estos archivos tambi&eacute;n se guardan autom&aacute;ticamente en <span className="font-mono text-fuchsia-300">contexto/</span>.
+                        </p>
+                        <button
+                          onClick={() => void saveFilesToContext(getAIDocumentExports(), 'manual')}
+                          disabled={isSavingAIDocs}
+                          className={cn(
+                            "rounded-2xl px-4 py-2 text-xs font-bold transition-all",
+                            isSavingAIDocs ? "bg-gray-800 text-gray-500" : "bg-fuchsia-500 text-black hover:brightness-110"
+                          )}
                         >
-                          <Download className="w-5 h-5" />
+                          {isSavingAIDocs ? 'Guardando...' : 'Guardar todos en contexto/'}
                         </button>
+                      </div>
+                      {aiDocsSaveStatus && (
+                        <div className="text-[11px] text-fuchsia-200">{aiDocsSaveStatus}</div>
+                      )}
+                    </div>
+
+                    <div className="space-y-3">
+                      <button
+                        onClick={() => handleDownloadFile(generateAIVisionDocument(), `${projectName}_vision_ai.md`, 'text/markdown')}
+                        className="flex w-full items-center justify-between rounded-2xl border border-gray-800 bg-brand-bg/30 px-4 py-3 text-left transition-colors hover:border-fuchsia-500/40"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-sm font-bold text-white">AI Vision</div>
+                          <div className="text-xs text-gray-500">Para qu&eacute; existe el sistema y qu&eacute; deber&iacute;a entender otro agente</div>
+                        </div>
+                        <span className="shrink-0 text-sm font-bold text-fuchsia-400">Descargar</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleDownloadFile(generateAIArchitectureNarrative(), `${projectName}_architecture_narrative_ai.md`, 'text/markdown')}
+                        className="flex w-full items-center justify-between rounded-2xl border border-gray-800 bg-brand-bg/30 px-4 py-3 text-left transition-colors hover:border-cyan-500/40"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-sm font-bold text-white">AI Architecture Narrative</div>
+                          <div className="text-xs text-gray-500">Explicaci&oacute;n m&aacute;s humana del flujo y las tensiones del sistema</div>
+                        </div>
+                        <span className="shrink-0 text-sm font-bold text-cyan-400">Descargar</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleDownloadFile(generateAIRefactorPriorities(), `${projectName}_refactor_priorities_ai.md`, 'text/markdown')}
+                        className="flex w-full items-center justify-between rounded-2xl border border-gray-800 bg-brand-bg/30 px-4 py-3 text-left transition-colors hover:border-rose-500/40"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-sm font-bold text-white">AI Refactor Priorities</div>
+                          <div className="text-xs text-gray-500">Focos de riesgo, consolidaci&oacute;n y deuda seg&uacute;n la auditor&iacute;a IA</div>
+                        </div>
+                        <span className="shrink-0 text-sm font-bold text-rose-400">Descargar</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleDownloadFile(generateAIAgentHandoff(agentTask), `${projectName}_agent_handoff_ai.md`, 'text/markdown')}
+                        className="flex w-full items-center justify-between rounded-2xl border border-gray-800 bg-brand-bg/30 px-4 py-3 text-left transition-colors hover:border-emerald-500/40"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-sm font-bold text-white">AI Agent Handoff</div>
+                          <div className="text-xs text-gray-500">Entrega lista para otro agente, con lectura estrat&eacute;gica y task pack</div>
+                        </div>
+                        <span className="shrink-0 text-sm font-bold text-emerald-400">Descargar</span>
+                      </button>
                     </div>
                   </div>
                 )}
-              </div>
 
-              <div className="space-y-4">
-                <div className="bg-brand-primary/5 border border-brand-primary/20 p-5 rounded-3xl flex items-center gap-4 mb-6">
-                  <div className="w-12 h-12 rounded-full bg-brand-primary/10 flex items-center justify-center text-brand-primary shrink-0">
-                    <Code2 className="w-6 h-6" />
-                  </div>
-                  <p className="text-xs text-brand-primary font-medium italic leading-relaxed">
-                    "¡Exacto! Esto es lo que ocupábamos los desarrolladores para dar contexto real a nuestros agentes de IA."
-                  </p>
-                </div>
-
-                <div className="bg-brand-secondary/5 border border-brand-secondary/20 p-5 rounded-3xl mb-6 flex flex-col gap-3">
-                  <div className="flex items-center gap-2 text-brand-secondary">
-                    <Lightbulb className="w-4 h-4" />
-                    <span className="text-[10px] font-bold uppercase tracking-widest">Consejo Pro para el Agente</span>
-                  </div>
-                  <div className="space-y-2">
-                    <p className="text-[11px] text-gray-400 leading-relaxed">
-                      Cuando descargues el <span className="text-brand-secondary font-mono">snapshot_completo.txt</span>, simplemente dile a tu agente de IA:
+                <div className="space-y-4 border-b border-gray-800 pb-6">
+                  <div className="space-y-1">
+                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-emerald-400">Task Pack Builder</div>
+                    <h4 className="text-lg font-bold text-white sm:text-xl">Paquete corto para una tarea concreta</h4>
+                    <p className="text-sm leading-relaxed text-gray-400">
+                      Escribe la tarea como se la pedir&iacute;as a un agente. ProjectGrapher arma contexto corto, archivos candidatos y relaciones para empezar r&aacute;pido.
                     </p>
-                    <div className="p-3 bg-black/40 rounded-xl border border-white/5 text-gray-300 italic text-[11px] font-mono leading-relaxed">
-                      "Analiza este snapshot de mi arquitectura. Dame un resumen de la lógica de flujo y propón una mejora modular basada en las capas detectadas."
+                  </div>
+
+                  <textarea
+                    value={agentTask}
+                    onChange={(e) => setAgentTask(e.target.value)}
+                    rows={3}
+                    placeholder="Ejemplo: ajusta el perfil del usuario y dime qué archivos tocar"
+                    className="w-full rounded-2xl border border-gray-800 bg-black/30 px-4 py-3 text-sm text-white outline-none transition-colors focus:border-emerald-500"
+                  />
+
+                  <p className="text-xs leading-relaxed text-gray-500">
+                    Este pack intenta reducir tokens y priorizar archivos con mayor probabilidad de impacto.
+                  </p>
+
+                  <button
+                    onClick={() => handleDownloadFile(taskPackPreview, `${projectName}_task_pack.md`, 'text/markdown')}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-bold text-black transition-all hover:brightness-110"
+                  >
+                    <Download className="h-4 w-4" />
+                    Descargar Task Pack
+                  </button>
+
+                  <div className="space-y-4 rounded-2xl border border-white/6 bg-black/40 p-4">
+                    {taskPackData && (
+                      <>
+                        <div className="space-y-1">
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-400">Resumen del Pack</div>
+                          <p className="text-sm text-gray-300">{taskPackData.projectSummary}</p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Archivos primarios</div>
+                          <div className="space-y-2">
+                            {taskPackData.primaryFiles.slice(0, 5).map((file) => (
+                              <div key={file.path} className="rounded-xl border border-white/6 bg-white/[0.03] p-3">
+                                <div className="break-all font-mono text-xs text-white">{file.path}</div>
+                                <div className="mt-1 text-[11px] text-gray-400">Impacto: {file.importance} · Score: {file.score}</div>
+                                <div className="mt-2 space-y-1">
+                                  {file.reasons.map((reason) => (
+                                    <div key={reason} className="text-[11px] text-gray-500">- {reason}</div>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Archivos relacionados</div>
+                          <div className="space-y-2">
+                            {taskPackData.relatedFiles.slice(0, 4).map((file) => (
+                              <div key={file.path} className="rounded-xl border border-white/6 bg-white/[0.03] p-3">
+                                <div className="break-all font-mono text-xs text-white">{file.path}</div>
+                                <div className="mt-1 text-[11px] text-gray-500">{file.reasons[0]}</div>
+                              </div>
+                            ))}
+                            {!taskPackData.relatedFiles.length && (
+                              <div className="text-xs text-gray-500">No se detectaron relacionados claros en el subgrafo inicial.</div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Orden de lectura</div>
+                          <div className="space-y-1">
+                            {taskPackData.readingOrder.map((path, index) => (
+                              <div key={path} className="text-xs text-gray-300">
+                                <span className="mr-2 text-emerald-400">{index + 1}.</span>
+                                <span className="break-all font-mono">{path}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    <div className="border-t border-white/6 pt-4">
+                      <div className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Markdown exportable</div>
+                      <div className="max-h-[220px] overflow-auto custom-scrollbar">
+                        <div className="prose prose-invert prose-sm max-w-none break-words prose-headings:mb-3 prose-headings:text-white prose-p:text-gray-300 prose-li:text-gray-300 prose-strong:text-white prose-code:text-emerald-300">
+                          <Markdown>{taskPackPreview}</Markdown>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest font-display">Vista Previa Snapshot</h4>
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2 px-2 py-1 bg-brand-primary/5 border border-brand-primary/20 rounded-lg">
-                      <span className="text-[10px] text-brand-primary font-mono whitespace-nowrap">
-                        ~{(generateAIContext().length / 4).toLocaleString()} TOKENS
-                      </span>
-                    </div>
-                    <button 
-                      onClick={() => handleDownloadFile(generateAIContext(), "snapshot_completo.txt", "text/plain")}
-                      className="text-[10px] font-bold text-brand-secondary hover:underline uppercase flex items-center gap-1"
-                    >
-                      <Download className="w-3 h-3" /> Descargar
-                    </button>
-                    <button 
-                      onClick={copyToClipboard}
-                      className="text-[10px] font-bold text-brand-primary hover:underline uppercase"
-                    >
-                      {copied ? '¡Copiado!' : 'Copiar Portapapeles'}
-                    </button>
-                  </div>
+                {/* Export Cards */}
+                <div className="space-y-4">
+                   <div className="group flex flex-col gap-4 rounded-[2rem] border border-gray-800 bg-brand-bg/40 p-5 transition-all hover:border-brand-primary/50 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+                      <div className="flex items-center gap-5">
+                         <div className="p-4 bg-brand-primary/10 rounded-2xl group-hover:bg-brand-primary/20 transition-colors">
+                            <Database className="w-6 h-6 text-brand-primary" />
+                         </div>
+                         <div>
+                            <h4 className="text-white font-bold">Contexto de Arquitectura</h4>
+                            <p className="text-xs text-gray-500">Prompt optimizado por tokens</p>
+                         </div>
+                      </div>
+                      <button 
+                        onClick={() => handleDownloadFile(generateAIContext(), `${projectName}_snapshot.md`, 'text/markdown')}
+                        className="p-3 text-gray-500 hover:text-white transition-colors"
+                      >
+                         <Download className="w-6 h-6" />
+                      </button>
+                   </div>
+
+                   <div className="group flex flex-col gap-4 rounded-[2rem] border border-gray-800 bg-brand-bg/40 p-5 transition-all hover:border-sky-500/50 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+                      <div className="flex items-center gap-5">
+                         <div className="p-4 bg-sky-500/10 rounded-2xl group-hover:bg-sky-500/20 transition-colors">
+                            <FileText className="w-6 h-6 text-sky-400" />
+                         </div>
+                         <div>
+                            <h4 className="text-white font-bold">Resumen Ejecutivo</h4>
+                            <p className="text-xs text-gray-500">Brief local para otros agentes</p>
+                         </div>
+                      </div>
+                      <button 
+                        onClick={() => handleDownloadFile(generateProjectBrief(), `${projectName}_brief.md`, 'text/markdown')}
+                        className="p-3 text-gray-500 hover:text-white transition-colors"
+                      >
+                         <Download className="w-6 h-6" />
+                      </button>
+                   </div>
+
+                   <div className="group flex flex-col gap-4 rounded-[2rem] border border-gray-800 bg-brand-bg/40 p-5 transition-all hover:border-amber-500/50 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+                      <div className="flex items-center gap-5">
+                         <div className="p-4 bg-amber-500/10 rounded-2xl group-hover:bg-amber-500/20 transition-colors">
+                            <Code2 className="w-6 h-6 text-amber-400" />
+                         </div>
+                         <div>
+                            <h4 className="text-white font-bold">Ficha Técnica JSON</h4>
+                            <p className="text-xs text-gray-500">Lenguajes, stack, capas y hotspots</p>
+                         </div>
+                      </div>
+                      <button 
+                        onClick={() => handleDownloadFile(generateProjectMetadata(), `${projectName}_metadata.json`, 'application/json')}
+                        className="p-3 text-gray-500 hover:text-white transition-colors"
+                      >
+                         <Download className="w-6 h-6" />
+                      </button>
+                   </div>
+
+                   <div className="group flex flex-col gap-4 rounded-[2rem] border border-gray-800 bg-brand-bg/40 p-5 transition-all hover:border-emerald-500/50 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+                      <div className="flex items-center gap-5">
+                         <div className="p-4 bg-emerald-500/10 rounded-2xl group-hover:bg-emerald-500/20 transition-colors">
+                            <Share2 className="w-6 h-6 text-emerald-400" />
+                         </div>
+                         <div>
+                            <h4 className="text-white font-bold">Guía del Grafo</h4>
+                            <p className="text-xs text-gray-500">Explica conexiones útiles para otro agente</p>
+                         </div>
+                      </div>
+                      <button 
+                        onClick={() => handleDownloadFile(generateGraphGuide(), `${projectName}_graph_guide.md`, 'text/markdown')}
+                        className="p-3 text-gray-500 hover:text-white transition-colors"
+                      >
+                         <Download className="w-6 h-6" />
+                      </button>
+                   </div>
+
+                   <div className="group flex flex-col gap-4 rounded-[2rem] border border-gray-800 bg-brand-bg/40 p-5 transition-all hover:border-brand-secondary/50 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+                      <div className="flex items-center gap-5">
+                         <div className="p-4 bg-brand-secondary/10 rounded-2xl group-hover:bg-brand-secondary/20 transition-colors">
+                            <Network className="w-6 h-6 text-brand-secondary" />
+                         </div>
+                         <div>
+                            <h4 className="text-white font-bold">Grafo de Dependencias</h4>
+                            <p className="text-xs text-gray-500">JSON estructural</p>
+                         </div>
+                      </div>
+                      <button 
+                        onClick={() => handleDownloadFile(JSON.stringify(projectData, null, 2), `${projectName}_graph.json`, 'application/json')}
+                        className="p-3 text-gray-500 hover:text-white transition-colors"
+                      >
+                         <Download className="w-6 h-6" />
+                      </button>
+                   </div>
                 </div>
-                <div className="bg-black/40 rounded-3xl border border-white/5 p-6 font-mono text-[11px] text-gray-400 leading-relaxed max-h-[300px] overflow-y-auto custom-scrollbar relative">
-                   <div className="absolute top-4 right-4 text-[9px] text-gray-700 select-none">DATA_ORIGIN: LOCAL</div>
-                   <pre className="whitespace-pre-wrap">{generateAIContext()}</pre>
+
+                {/* Quote Card */}
+                <div className="flex flex-col items-start gap-4 rounded-[2rem] border border-brand-primary/10 bg-brand-primary/5 p-5 sm:flex-row sm:items-center sm:gap-6 sm:p-8">
+                   <div className="p-4 bg-brand-primary/10 rounded-full shrink-0">
+                      <Code2 className="w-6 h-6 text-brand-primary" />
+                   </div>
+                   <p className="text-sm italic text-brand-primary/80 font-medium leading-relaxed">
+                      "¡Exacto! Esto es lo que ocupábamos los desarrolladores para dar contexto real a nuestros agentes de IA."
+                   </p>
+                </div>
+
+                {/* Pro Tip Card */}
+                <div className="space-y-6 rounded-[2rem] border border-emerald-500/20 bg-brand-bg/80 p-5 sm:p-8">
+                   <div className="flex items-center gap-3 text-emerald-500">
+                      <Sparkles className="w-5 h-5" />
+                      <span className="text-[10px] font-black uppercase tracking-[0.2em]">Consejo Pro para el Agente</span>
+                   </div>
+                   <p className="text-xs text-gray-400 leading-relaxed">
+                      Cuando descargues el <span className="text-emerald-400 font-mono">snapshot_completo.txt</span>, simplemente dile a tu agente de IA:
+                   </p>
+                   <div className="bg-black/60 p-6 rounded-2xl border border-white/5 italic text-gray-300 text-xs leading-relaxed font-serif">
+                      "Analiza este snapshot de mi arquitectura. Dame un resumen de la lógica de flujo y propón una mejora modular basada en las capas detectadas."
+                   </div>
+                </div>
+
+                {/* Snapshot Preview Section */}
+                <div className="space-y-4 pt-4">
+                  <div className="flex flex-col gap-4 rounded-3xl border border-white/5 bg-brand-bg/20 p-4 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="flex items-center gap-4">
+                       <h5 className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em] w-24 leading-tight">Vista Previa Snapshot</h5>
+                       <div className="px-4 py-2 bg-brand-primary/10 text-brand-primary text-[10px] font-black rounded-full border border-brand-primary/20 flex flex-col items-center justify-center min-w-[80px]">
+                          <span className="opacity-60 text-[8px]">~{Math.round(generateAIContext().length / 4).toLocaleString()}</span>
+                          <span>TOKENS</span>
+                       </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-6">
+                       <button 
+                         onClick={() => handleDownloadFile(generateAIContext(), `${projectName}_snapshot.md`, 'text/markdown')}
+                         className="flex items-center gap-2 text-[10px] font-black text-emerald-500 hover:text-emerald-400 transition-colors uppercase tracking-widest group"
+                       >
+                         <Download className="w-4 h-4 group-hover:-translate-y-0.5 transition-transform" />
+                         <span>Descargar Snapshot</span>
+                       </button>
+                    </div>
+                  </div>
+                  
+                  <div className="group relative max-h-[400px] overflow-auto rounded-[2rem] border border-white/5 bg-black/40 p-4 font-mono text-[10px] text-gray-400 custom-scrollbar sm:p-6 lg:p-7 xl:p-8">
+                    <pre className="whitespace-pre leading-relaxed">{generateAIContext()}</pre>
+                  </div>
                 </div>
               </div>
             </motion.div>
           )}
 
           {activeTab === 'ia' && (
-            <motion.div 
-              key="ia"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="flex-1 flex flex-col p-8 overflow-y-auto custom-scrollbar"
-            >
-              <div className="mb-12">
-                <h3 className="text-2xl font-bold text-white mb-2 font-display">Inteligencia Arquitectónica</h3>
-                <p className="text-sm text-gray-400">Reportes avanzados generados por modelos de lenguaje de última generación.</p>
+            <motion.div key="ia" className="flex-1 flex flex-col h-full overflow-hidden">
+              <div className="border-b border-gray-800 p-4 sm:p-6 lg:p-7 xl:p-8">
+                <h3 className="text-2xl font-bold text-white mb-2">Auditoría de IA</h3>
+                <p className="text-xs text-gray-500">Resultados del análisis arquitectónico basado en el modelo seleccionado.</p>
               </div>
 
-              <div className="bg-brand-surface/50 border border-gray-800 p-10 rounded-[40px] text-center flex flex-col items-center">
-                <div className="w-20 h-20 rounded-3xl bg-brand-primary/10 flex items-center justify-center text-brand-primary mb-8 animate-pulse">
-                  <Sparkles className="w-10 h-10" />
-                </div>
-                <h4 className="text-xl font-bold text-white mb-3">Auditoría de Diseño AI</h4>
-                <p className="text-sm text-gray-500 mb-10 max-w-sm">
-                  Nuestro motor analiza el grafo de dependencias para encontrar cuellos de botella, lógica circular y sugerir optimizaciones de escalabilidad.
-                </p>
-                <button 
-                  onClick={handleAIReview}
-                  disabled={isReviewing}
-                  className="w-full py-5 bg-brand-primary text-white rounded-2xl font-bold hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-3 shadow-xl shadow-brand-primary/20"
-                >
-                  {isReviewing ? <Loader2 className="w-6 h-6 animate-spin" /> : <BarChart3 className="w-6 h-6" />}
-                  {aiReview ? 'Abrir Reporte Detallado' : 'Generar Reporte Ahora'}
-                </button>
+              <div className="custom-scrollbar flex-1 overflow-y-auto p-4 sm:p-6 lg:p-7 xl:p-8">
+                {isReviewing ? (
+                  <div className="py-20 flex flex-col items-center gap-4">
+                    <Loader2 className="w-12 h-12 text-brand-primary animate-spin" />
+                    <p className="text-white font-bold">Generando reporte...</p>
+                  </div>
+                ) : aiError ? (
+                  <div className="p-6 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-400 text-sm">
+                    {aiError}
+                  </div>
+                ) : aiReview ? (
+                  <div className="prose prose-invert prose-sm max-w-none">
+                    <Markdown>{aiReview}</Markdown>
+                  </div>
+                ) : (
+                  <div className="text-center py-10 space-y-8">
+                    {!hasEffectiveKey && (
+                      <div className="bg-amber-500/10 border border-amber-500/20 p-6 rounded-3xl text-left space-y-3">
+                         <div className="flex items-center gap-2 text-amber-500">
+                            <AlertCircle className="w-5 h-5" />
+                            <span className="text-sm font-bold uppercase tracking-wider">Configuración Requerida</span>
+                         </div>
+                         <p className="text-xs text-amber-200/70 leading-relaxed">
+                            No has configurado una API Key para <strong>{aiProvider.toUpperCase()}</strong>. Para generar reportes automáticos, necesitas añadir tu llave en los ajustes.
+                         </p>
+                         <button 
+                           onClick={() => setActiveTab('settings')}
+                           className="text-[10px] font-bold text-amber-500 hover:underline flex items-center gap-1"
+                         >
+                            Ir a Configuración <ChevronRight className="w-3 h-3" />
+                         </button>
+                      </div>
+                    )}
+
+                    <div className="py-10">
+                      <Sparkles className="w-12 h-12 text-gray-800 mx-auto mb-4" />
+                      <p className="text-gray-500 text-sm mb-6">No hay reportes generados aún.</p>
+                      <button
+                        onClick={generateAIReview}
+                        disabled={!hasEffectiveKey}
+                        className={cn(
+                          "px-8 py-3 rounded-2xl text-sm font-bold transition-all",
+                          (!hasEffectiveKey)
+                            ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                            : "bg-brand-primary text-white hover:brightness-110 shadow-lg shadow-brand-primary/20"
+                        )}
+                      >
+                        Generar Auditoría Ahora
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </motion.div>
           )}
 
-          {activeTab === 'files' && (
-            <motion.div 
-              key="files"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="flex-1 flex flex-col h-full overflow-hidden"
-            >
-              <div className="p-6 border-b border-gray-800 bg-brand-surface/50">
-                <h3 className="text-xl font-bold text-white mb-2 font-display">Estructura del Proyecto</h3>
-                <div className="flex items-center gap-3">
-                   <div className="text-[10px] font-mono text-brand-primary bg-brand-primary/10 px-2 py-1 rounded">
-                    {projectData.files.length} ARCHIVOS
-                   </div>
-                   <div className="text-[10px] font-mono text-brand-secondary bg-brand-secondary/10 px-2 py-1 rounded lowercase">
-                    {projectData.files[0]?.path.split('/')[0]}
-                   </div>
-                </div>
-              </div>
-
-              <div className="p-4 border-b border-gray-800 bg-brand-surface/20">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
-                  <input
-                    type="text"
-                    placeholder="Search folder or files..."
-                    value={treeSearch}
-                    onChange={(e) => setTreeSearch(e.target.value)}
-                    className="w-full bg-brand-bg/50 border border-gray-800 rounded-xl py-2 pl-10 pr-4 text-xs text-white focus:outline-none focus:border-brand-primary/50 transition-all"
-                  />
-                </div>
-              </div>
-
-              <div className="flex-1 overflow-y-auto custom-scrollbar p-2 py-4">
-                 {buildFileTree(projectData.files.filter(f => f.path.toLowerCase().includes(treeSearch.toLowerCase()))).length === 0 ? (
-                    <div className="p-8 text-center text-gray-600 italic text-sm">No se encontraron archivos</div>
-                 ) : (
-                    buildFileTree(projectData.files.filter(f => f.path.toLowerCase().includes(treeSearch.toLowerCase()))).map((node, i) => (
-                      <TreeItem 
-                        key={i} 
-                        node={node} 
-                        level={0} 
-                        onFileSelect={(file) => {
-                          const node = projectData.nodes.find(n => n.id === file.id);
-                          if (node) setSelectedNode(node);
-                          setShowFileModal(true);
-                        }}
-                        selectedId={selectedNode?.id || null}
-                      />
-                    ))
-                 )}
-              </div>
+          {activeTab === 'settings' && (
+            <motion.div key="settings" className="custom-scrollbar h-full space-y-6 overflow-y-auto p-4 sm:p-6 lg:p-7 xl:p-8">
+              <h3 className="text-2xl font-bold text-white">Configuración AI</h3>
+              <AIConfig />
             </motion.div>
           )}
         </AnimatePresence>
       </aside>
 
       {/* --- MODALS --- */}
-      
-      {/* IA Review Modal */}
-      <Modal 
-        isOpen={showIAModal} 
-        onClose={() => setShowIAModal(false)} 
-        title="Reporte Arquitectónico AI"
-      >
-        {!hasAiKey ? (
-           <div className="py-20 flex flex-col items-center justify-center text-center space-y-6">
-              <div className="w-20 h-20 rounded-full bg-amber-500/10 flex items-center justify-center text-amber-500">
-                <AlertCircle className="w-10 h-10" />
-              </div>
-              <div className="max-w-md">
-                <h4 className="text-2xl font-bold text-white mb-4">API Key Requerida</h4>
-                <p className="text-gray-400 mb-8">Esta función requiere conectar con los modelos de Gemini. Configura tu API Key en los ajustes del entorno.</p>
-              </div>
-           </div>
-        ) : isReviewing && !aiReview ? (
-           <div className="py-20 flex flex-col items-center justify-center text-center space-y-8">
-              <div className="relative">
-                <div className="w-24 h-24 rounded-full border-4 border-brand-primary/20 border-t-brand-primary animate-spin" />
-                <Sparkles className="absolute inset-0 m-auto w-10 h-10 text-brand-primary animate-pulse" />
-              </div>
-              <div>
-                <h3 className="text-2xl font-bold text-white mb-2">Construyendo Inteligencia...</h3>
-                <p className="text-gray-500">Estamos analizando {projectData.files.length} nodos y {projectData.links.length} dependencias.</p>
-              </div>
-           </div>
-        ) : aiError ? (
-           <div className="py-20 flex flex-col items-center justify-center text-center px-6">
-              <div className="w-20 h-20 rounded-3xl bg-red-500/10 flex items-center justify-center text-red-500 mb-8">
-                <AlertCircle className="w-10 h-10" />
-              </div>
-              <h3 className="text-2xl font-bold text-white mb-4">Error de Análisis</h3>
-              <p className="text-gray-400 mb-10 leading-relaxed">
-                {aiError}
-              </p>
-              <button 
-                onClick={handleAIReview}
-                className="px-8 py-3 bg-white/5 border border-white/10 rounded-xl text-white font-bold hover:bg-white/10 transition-all"
-              >
-                Reintentar Análisis
-              </button>
-           </div>
-        ) : aiReview ? (
-          <div className="prose prose-invert prose-brand max-w-none">
-            <div className="markdown-body">
-              <Markdown>{aiReview}</Markdown>
-            </div>
-          </div>
-        ) : null}
-      </Modal>
 
-      {/* File Details Modal */}
-      <Modal 
-        isOpen={showFileModal && !!selectedNode} 
-        onClose={() => setShowFileModal(false)} 
-        title={selectedNode?.label || "Detalles del Archivo"}
-      >
+      <Modal isOpen={showFileModal && !!selectedNode} onClose={() => setShowFileModal(false)} title={selectedNode?.label || ""}>
         {selectedNode && (
-          <div className="space-y-12">
-            <div className="flex flex-col md:flex-row gap-6 justify-between items-start">
-               <div className="space-y-2">
-                  <div className="text-[10px] font-bold text-brand-primary uppercase tracking-[0.2em]">Ruta Completa</div>
-                  <div className="text-xl font-mono text-white bg-white/5 p-4 rounded-2xl border border-white/5 break-all">
-                    {selectedNode.id}
-                  </div>
-               </div>
-               <div className="flex gap-4 shrink-0">
-                  <div className="px-6 py-4 bg-brand-surface border border-gray-800 rounded-2xl text-center min-w-[120px]">
-                    <div className="text-[9px] text-gray-500 uppercase mb-1">Tamaño</div>
-                    <div className="text-lg font-bold text-white font-mono">{(selectedNode.data.size / 1024).toFixed(1)}k</div>
-                  </div>
-                  <div className="px-6 py-4 bg-brand-surface border border-gray-800 rounded-2xl text-center min-w-[120px]">
-                    <div className="text-[9px] text-gray-500 uppercase mb-1">Impacto</div>
-                    <div className="text-lg font-bold text-brand-secondary font-mono">{selectedNode.data.importance}</div>
-                  </div>
-               </div>
+          <div className="space-y-8">
+            <div className="bg-white/5 p-4 rounded-2xl border border-white/5 font-mono text-sm text-white break-all">
+              {selectedNode.id}
             </div>
-
-            {/* Relations Section */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              <div className="space-y-4">
-                <div className="text-[10px] font-bold text-gray-500 uppercase tracking-[0.2em] flex items-center gap-2">
-                  <Share2 className="w-4 h-4 text-brand-primary" /> Dependencias (Salientes)
-                </div>
-                <div className="bg-white/[0.02] border border-white/5 rounded-3xl p-6 min-h-[160px] max-h-[300px] overflow-y-auto custom-scrollbar">
-                  {projectData.links.filter(l => (typeof l.source === 'string' ? l.source : (l.source as any).id) === selectedNode.id).length > 0 ? (
-                    <div className="space-y-2">
-                      {projectData.links
-                        .filter(l => (typeof l.source === 'string' ? l.source : (l.source as any).id) === selectedNode.id)
-                        .map((l, i) => {
-                          const targetId = typeof l.target === 'string' ? l.target : (l.target as any).id;
-                          const target = projectData.nodes.find(n => n.id === targetId);
-                          return (
-                            <button
-                              key={i}
-                              onClick={() => target && setSelectedNode(target)}
-                              className="w-full text-left p-3 rounded-xl bg-white/5 border border-white/5 hover:border-brand-primary/50 transition-all flex items-center justify-between group"
-                            >
-                              <span className="text-sm text-gray-300 truncate pr-4">{target?.label || targetId}</span>
-                              <ChevronRight className="w-4 h-4 text-brand-primary opacity-0 group-hover:opacity-100 transition-all" />
-                            </button>
-                          );
-                        })}
-                    </div>
-                  ) : (
-                    <div className="h-full flex flex-col items-center justify-center text-center p-4">
-                      <div className="w-10 h-10 rounded-full bg-gray-900 flex items-center justify-center text-gray-700 mb-2">
-                        <AlertCircle className="w-5 h-5" />
-                      </div>
-                      <p className="text-xs text-gray-600 italic">Este archivo no importa módulos internos detectados.</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div className="text-[10px] font-bold text-gray-500 uppercase tracking-[0.2em] flex items-center gap-2">
-                  <Network className="w-4 h-4 text-brand-secondary" /> Dependientes (Entrantes)
-                </div>
-                <div className="bg-white/[0.02] border border-white/5 rounded-3xl p-6 min-h-[160px] max-h-[300px] overflow-y-auto custom-scrollbar">
-                  {projectData.links.filter(l => (typeof l.target === 'string' ? l.target : (l.target as any).id) === selectedNode.id).length > 0 ? (
-                    <div className="space-y-2">
-                      {projectData.links
-                        .filter(l => (typeof l.target === 'string' ? l.target : (l.target as any).id) === selectedNode.id)
-                        .map((l, i) => {
-                          const sourceId = typeof l.source === 'string' ? l.source : (l.source as any).id;
-                          const source = projectData.nodes.find(n => n.id === sourceId);
-                          return (
-                            <button
-                              key={i}
-                              onClick={() => source && setSelectedNode(source)}
-                              className="w-full text-left p-3 rounded-xl bg-white/5 border border-white/5 hover:border-brand-secondary/50 transition-all flex items-center justify-between group"
-                            >
-                              <span className="text-sm text-gray-300 truncate pr-4">{source?.label || sourceId}</span>
-                              <ChevronRight className="w-4 h-4 text-brand-secondary opacity-0 group-hover:opacity-100 transition-all" />
-                            </button>
-                          );
-                        })}
-                    </div>
-                  ) : (
-                    <div className="h-full flex flex-col items-center justify-center text-center p-4">
-                      <div className="w-10 h-10 rounded-full bg-gray-900 flex items-center justify-center text-gray-700 mb-2">
-                        <AlertCircle className="w-5 h-5" />
-                      </div>
-                      <p className="text-xs text-gray-600 italic">Ningún otro archivo interno parece depender de este.</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div>
-               <div className="text-[10px] font-bold text-gray-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
-                 <Code2 className="w-4 h-4 text-brand-primary" /> Contenido del Archivo
-               </div>
-               <div className="bg-[#0d1117] rounded-3xl border border-white/5 overflow-hidden shadow-2xl">
-                  <div className="p-4 bg-white/[0.02] border-b border-white/5 flex items-center justify-between text-[10px] font-mono text-gray-600">
-                     <span>{selectedNode.label}</span>
-                     <span>{selectedNode.group.toUpperCase()}</span>
-                  </div>
-                  <div className="p-6 overflow-x-auto text-xs font-mono text-gray-400 custom-scrollbar leading-relaxed">
-                    <pre>{selectedNode.data.content}</pre>
-                  </div>
-               </div>
+            <div className="bg-brand-bg rounded-3xl border border-white/5 overflow-hidden">
+              <div className="p-4 border-b border-white/5 text-[10px] text-gray-500 uppercase">Contenido del Archivo</div>
+              <pre className="p-6 text-xs text-gray-400 font-mono overflow-x-auto">{selectedNode.data.content}</pre>
             </div>
           </div>
         )}
       </Modal>
 
-    </div>
-  );
-}
+      <Modal isOpen={showIAModal} onClose={() => setShowIAModal(false)} title="Auditoría Arquitectónica">
+        {isReviewing ? (
+          <div className="py-20 flex flex-col items-center gap-4">
+            <Loader2 className="w-12 h-12 text-brand-primary animate-spin" />
+            <p className="text-white font-bold">Analizando Grafo...</p>
+          </div>
+        ) : aiError ? (
+          <div className="py-20 text-center text-red-400">{aiError}</div>
+        ) : aiReview ? (
+          <div className="prose prose-invert max-w-none prose-sm md:prose-base">
+            <Markdown>{aiReview}</Markdown>
+          </div>
+        ) : null}
+      </Modal>
 
-function NavItem({ active, onClick, icon, label, mobile, badge }: { 
-  active: boolean, 
-  onClick: () => void, 
-  icon: React.ReactNode, 
-  label: string,
-  mobile?: boolean,
-  badge?: boolean
-}) {
-  return (
-    <button 
-      onClick={onClick}
-      className={cn(
-        "flex items-center gap-3 p-3 rounded-xl transition-all relative",
-        active 
-          ? "bg-brand-primary text-white" 
-          : "text-gray-500 hover:text-white hover:bg-gray-800"
-      )}
-    >
-      <div className="shrink-0">{icon}</div>
-      {mobile && <span className="font-medium text-sm md:hidden">{label}</span>}
-      {badge && <div className="absolute top-2 right-2 md:top-1 md:right-1 w-2 h-2 bg-brand-secondary rounded-full" />}
-    </button>
+    </div>
   );
 }

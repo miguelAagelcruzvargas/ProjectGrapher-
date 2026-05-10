@@ -1,5 +1,5 @@
 
-import React, { useEffect, useRef } from 'react';
+import React, { memo, useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { GraphNode, GraphLink } from '../types';
 
@@ -11,15 +11,75 @@ interface GraphCanvasProps {
   isFocusMode: boolean;
 }
 
-export const GraphCanvas: React.FC<GraphCanvasProps> = ({ nodes, links, onNodeClick, selectedNodeId, isFocusMode }) => {
+const GraphCanvasComponent: React.FC<GraphCanvasProps> = ({ nodes, links, onNodeClick, selectedNodeId, isFocusMode }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const updateSize = () => {
+      if (!containerRef.current) return;
+      const nextWidth = containerRef.current.clientWidth;
+      const nextHeight = containerRef.current.clientHeight;
+      setContainerSize((current) => {
+        if (current.width === nextWidth && current.height === nextHeight) {
+          return current;
+        }
+        return { width: nextWidth, height: nextHeight };
+      });
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(containerRef.current);
+    window.addEventListener('orientationchange', updateSize);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('orientationchange', updateSize);
+    };
+  }, []);
 
   useEffect(() => {
     if (!svgRef.current || !containerRef.current) return;
 
     const width = containerRef.current.clientWidth;
     const height = containerRef.current.clientHeight;
+    const isPhone = width < 640;
+    const isCompact = width < 900;
+    const isTablet = width < 1200;
+    const isTouchLayout = isTablet;
+    const horizontalPadding = isPhone ? 18 : isCompact ? 28 : isTablet ? 40 : 48;
+    const verticalPadding = isPhone ? 26 : isCompact ? 34 : isTablet ? 44 : 48;
+    const labelOffset = isPhone ? 14 : 16;
+    const labelBottomPadding = isPhone ? 26 : 30;
+    const mobileLabelImportanceThreshold = isPhone ? 3 : 2;
+    const visibleNodeIds = new Set(nodes.map((node) => node.id));
+    const activeLinks = links.filter((link) => {
+      const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
+      const targetId = typeof link.target === 'string' ? link.target : link.target.id;
+      return visibleNodeIds.has(sourceId) && visibleNodeIds.has(targetId);
+    });
+    const clusterNames = Array.from(new Set(nodes.map((node) => node.cluster || 'root'))).sort();
+    const clusterTargets = new Map<string, { x: number; y: number }>();
+    const effectiveClusterCount = Math.max(clusterNames.length, 1);
+    const orbitRadiusX = Math.max(width * (isPhone ? 0.22 : isCompact ? 0.26 : 0.3), 70);
+    const orbitRadiusY = Math.max(height * (isPhone ? 0.18 : isCompact ? 0.2 : 0.24), 54);
+
+    clusterNames.forEach((clusterName, index) => {
+      if (clusterName === 'root') {
+        clusterTargets.set(clusterName, { x: width / 2, y: height / 2 });
+        return;
+      }
+
+      const angle = (-Math.PI / 2) + ((Math.PI * 2) * index) / effectiveClusterCount;
+      clusterTargets.set(clusterName, {
+        x: width / 2 + Math.cos(angle) * orbitRadiusX,
+        y: height / 2 + Math.sin(angle) * orbitRadiusY
+      });
+    });
 
     const svg = d3.select(svgRef.current);
     svg.selectAll('*').remove();
@@ -43,7 +103,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ nodes, links, onNodeCl
 
     // Zoom setup
     const zoom = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.1, 8])
+      .scaleExtent([0.18, 8])
       .on('zoom', (event) => {
         g.attr('transform', event.transform);
       });
@@ -52,58 +112,49 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ nodes, links, onNodeCl
 
     // Forces
     const simulation = d3.forceSimulation<GraphNode>(nodes)
-      .force('link', d3.forceLink<GraphNode, GraphLink>(links)
+      .force('link', d3.forceLink<GraphNode, GraphLink>(activeLinks)
         .id(d => d.id)
         .distance(d => {
           const sNode = nodes.find(n => n.id === (typeof d.source === 'string' ? d.source : d.source.id));
           const tNode = nodes.find(n => n.id === (typeof d.target === 'string' ? d.target : d.target.id));
-          // Tighter links within clusters, looser across them
-          return sNode?.cluster === tNode?.cluster ? 100 : 250;
+          return sNode?.cluster === tNode?.cluster
+            ? (isPhone ? 52 : isCompact ? 66 : isTablet ? 86 : 110)
+            : (isPhone ? 110 : isCompact ? 136 : isTablet ? 180 : 250);
         })
         .strength(d => {
            const sNode = nodes.find(n => n.id === (typeof d.source === 'string' ? d.source : d.source.id));
            const tNode = nodes.find(n => n.id === (typeof d.target === 'string' ? d.target : d.target.id));
-           // Cross-cluster links are weaker to allow layers to separate
-           return sNode?.cluster === tNode?.cluster ? 1 : 0.3;
+           return sNode?.cluster === tNode?.cluster ? 0.9 : (isTouchLayout ? 0.18 : 0.24);
         }))
-      .force('charge', d3.forceManyBody().strength(-600)) // Stronger repulsion for better separation
+      .force('charge', d3.forceManyBody().strength(isPhone ? -180 : isCompact ? -260 : isTablet ? -340 : -600))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('x', d3.forceX(width / 2).strength(0.08))
-      .force('y', d3.forceY(height / 2).strength(0.08))
-      // Radial force: Centralize important nodes
+      .force('x', d3.forceX((d) => clusterTargets.get(d.cluster || 'root')?.x ?? width / 2).strength(isPhone ? 0.36 : isCompact ? 0.3 : isTablet ? 0.22 : 0.12))
+      .force('y', d3.forceY((d) => clusterTargets.get(d.cluster || 'root')?.y ?? height / 2).strength(isPhone ? 0.32 : isCompact ? 0.28 : isTablet ? 0.2 : 0.12))
       .force('radial', d3.forceRadial(0, width / 2, height / 2).strength(d => {
-        return (d as GraphNode).data.importance > 10 ? 0.2 : 0.02;
+        return (d as GraphNode).data.importance > 10 ? (isPhone ? 0.05 : isCompact ? 0.07 : 0.1) : 0.008;
       }))
-      .force('collision', d3.forceCollide().radius(d => (d as GraphNode).size + 40).iterations(3))
+      .force('collision', d3.forceCollide().radius(d => {
+        const node = d as GraphNode;
+        const labelRoom = (!isCompact || node.id === selectedNodeId || node.data.importance >= mobileLabelImportanceThreshold) ? 14 : 6;
+        return node.size + (isPhone ? 12 : isCompact ? 16 : isTablet ? 24 : 40) + labelRoom;
+      }).iterations(isPhone ? 3 : 4))
       .force('cluster', (alpha: number) => {
-        const centroids: Record<string, { x: number, y: number, count: number }> = {};
         nodes.forEach(n => {
-          if (!n.cluster) return;
-          if (!centroids[n.cluster]) centroids[n.cluster] = { x: 0, y: 0, count: 0 };
-          centroids[n.cluster].x += n.x || 0;
-          centroids[n.cluster].y += n.y || 0;
-          centroids[n.cluster].count++;
-        });
-
-        nodes.forEach(n => {
-          if (!n.cluster || !centroids[n.cluster]) return;
-          const c = centroids[n.cluster];
-          const cx = c.x / c.count;
-          const cy = c.y / c.count;
-          // Softly pull toward cluster center
-          n.vx = (n.vx || 0) + (cx - (n.x || 0)) * alpha * 0.2;
-          n.vy = (n.vy || 0) + (cy - (n.y || 0)) * alpha * 0.2;
+          const target = clusterTargets.get(n.cluster || 'root');
+          if (!target) return;
+          n.vx = (n.vx || 0) + (target.x - (n.x || 0)) * alpha * (isTouchLayout ? 0.18 : 0.12);
+          n.vy = (n.vy || 0) + (target.y - (n.y || 0)) * alpha * (isTouchLayout ? 0.18 : 0.12);
         });
       });
 
     // Links
     const link = g.append('g')
       .selectAll('line')
-      .data(links)
+      .data(activeLinks)
       .enter().append('line')
       .attr('stroke', '#374151')
       .attr('stroke-width', 1)
-      .attr('stroke-opacity', 0.3)
+      .attr('stroke-opacity', isCompact ? 0.2 : 0.3)
       .attr('marker-end', 'url(#arrowhead)');
 
     // Nodes
@@ -152,14 +203,19 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ nodes, links, onNodeCl
 
     // Labels
     node.append('text')
-      .attr('dy', d => d.size + 15)
+      .attr('dy', d => d.size + labelOffset)
       .attr('text-anchor', 'middle')
       .attr('fill', d => d.id === selectedNodeId ? '#fff' : '#9ca3af')
-      .attr('font-size', '10px')
+      .attr('font-size', isPhone ? '7px' : isCompact ? '8px' : '10px')
       .attr('font-weight', d => d.id === selectedNodeId ? 'bold' : 'normal')
       .attr('font-family', 'var(--font-mono)')
       .text(d => d.label)
       .style('pointer-events', 'none')
+      .attr('opacity', d => {
+        if (!isCompact) return 1;
+        if (d.id === selectedNodeId) return 1;
+        return d.data.importance >= mobileLabelImportanceThreshold ? 0.94 : 0;
+      })
       .style('text-shadow', '0 1px 2px rgba(0,0,0,0.8)');
 
     // Interaction Effects: Highlight connected edges
@@ -204,7 +260,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ nodes, links, onNodeCl
         .attr('opacity', isFocusMode ? 0.85 : 0.4);
 
       const connectedNodes = new Set<string>([activeFocusId]);
-      links.forEach(l => {
+      activeLinks.forEach(l => {
         const sId = typeof l.source === 'string' ? l.source : (l.source as any).id;
         const tId = typeof l.target === 'string' ? l.target : (l.target as any).id;
         const sIdStr = typeof sId === 'object' ? sId.id : sId;
@@ -242,6 +298,41 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ nodes, links, onNodeCl
 
     // Cluster labels group
     const clusterLabelGroup = g.append('g').attr('class', 'cluster-labels');
+
+    const fitGraphToViewport = (animate: boolean) => {
+      if (!nodes.length) return;
+
+      const positionedNodes = nodes.filter((node) => Number.isFinite(node.x) && Number.isFinite(node.y));
+      if (!positionedNodes.length) return;
+
+      const minX = d3.min(positionedNodes, (node) => (node.x ?? 0) - node.size - 10) ?? 0;
+      const maxX = d3.max(positionedNodes, (node) => (node.x ?? 0) + node.size + 10) ?? width;
+      const minY = d3.min(positionedNodes, (node) => (node.y ?? 0) - node.size - 24) ?? 0;
+      const maxY = d3.max(positionedNodes, (node) => (node.y ?? 0) + node.size + labelBottomPadding) ?? height;
+
+      const boundsWidth = Math.max(maxX - minX, 1);
+      const boundsHeight = Math.max(maxY - minY, 1);
+      const scale = Math.max(
+        0.18,
+        Math.min(
+          isPhone ? 2.6 : isCompact ? 2.2 : isTablet ? 1.9 : 1.3,
+          0.98 / Math.max(boundsWidth / Math.max(width - horizontalPadding * 2, 1), boundsHeight / Math.max(height - verticalPadding * 2, 1))
+        )
+      );
+
+      const targetX = width / 2 - ((minX + maxX) / 2) * scale;
+      const targetY = height / 2 - ((minY + maxY) / 2) * scale;
+      const transform = d3.zoomIdentity.translate(targetX, targetY).scale(scale);
+
+      if (animate) {
+        svg.transition().duration(450).call(zoom.transform, transform);
+        return;
+      }
+
+      svg.call(zoom.transform, transform);
+    };
+
+    let hasAutoFitted = false;
     
     simulation.on('tick', () => {
       // Update links
@@ -266,8 +357,8 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ nodes, links, onNodeCl
       
       const clusterData = Object.entries(centroids).map(([name, c]) => ({
         name,
-        x: c.x / c.count,
-        y: (c.y / c.count) - 60
+        x: Math.min(Math.max(c.x / c.count, horizontalPadding), width - horizontalPadding),
+        y: Math.max(verticalPadding * 0.72, (c.y / c.count) - (isCompact ? 34 : 60))
       })).filter(c => c.name !== 'root');
       
       const labels = clusterLabelGroup.selectAll<SVGTextElement, any>('text')
@@ -276,10 +367,10 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ nodes, links, onNodeCl
       labels.enter().append('text')
         .attr('text-anchor', 'middle')
         .attr('fill', '#4b5563')
-        .attr('font-size', '14px')
+        .attr('font-size', isCompact ? '10px' : '14px')
         .attr('font-weight', 'bold')
         .attr('font-family', 'var(--font-display)')
-        .attr('opacity', 0.4)
+        .attr('opacity', isCompact ? 0.28 : 0.4)
         .attr('pointer-events', 'none')
         .merge(labels as any)
         .attr('x', d => d.x)
@@ -287,12 +378,27 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ nodes, links, onNodeCl
         .text(d => d.name);
 
       labels.exit().remove();
+
+      if (!hasAutoFitted && simulation.alpha() < 0.18) {
+        hasAutoFitted = true;
+        fitGraphToViewport(true);
+      }
     });
 
+    const fallbackFit = window.setTimeout(() => {
+      if (!hasAutoFitted) {
+        hasAutoFitted = true;
+        fitGraphToViewport(false);
+      }
+    }, isCompact ? 350 : 200);
+
+    simulation.alpha(0.9).restart();
+
     return () => {
+      window.clearTimeout(fallbackFit);
       simulation.stop();
     };
-  }, [nodes, links, selectedNodeId, isFocusMode, onNodeClick]);
+  }, [nodes, links, selectedNodeId, isFocusMode, onNodeClick, containerSize]);
 
   return (
     <div ref={containerRef} className="w-full h-full bg-brand-bg relative overflow-hidden select-none">
@@ -300,6 +406,16 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ nodes, links, onNodeCl
     </div>
   );
 };
+
+export const GraphCanvas = memo(GraphCanvasComponent, (prevProps, nextProps) => {
+  return (
+    prevProps.nodes === nextProps.nodes &&
+    prevProps.links === nextProps.links &&
+    prevProps.onNodeClick === nextProps.onNodeClick &&
+    prevProps.selectedNodeId === nextProps.selectedNodeId &&
+    prevProps.isFocusMode === nextProps.isFocusMode
+  );
+});
 
 function getFillColor(ext: string) {
   const colors: Record<string, string> = {
