@@ -3,32 +3,25 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useMemo, useEffect, useState, useCallback, useRef } from 'react';
+import React from 'react';
 import {
-  Upload, Network, Code2,
-  FileText, ChevronRight, X, Play,
+  Network, FileText, ChevronRight, X, Play,
   Search, Info, Database, Download,
   LayoutDashboard, Share2, Folder,
-  Sparkles, AlertCircle, Loader2, BarChart3, Activity, Settings, LogOut
+  Sparkles, Loader2, BarChart3, Activity, Settings, LogOut
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
 
 import { GraphCanvas } from './components/GraphCanvas';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Modal } from './components/Modal';
 import { TreeItem } from './components/TreeItem';
 import { NavItem } from './components/NavItem';
-import { AIConfig } from './components/AIConfig';
-
-import { useProjectStore } from './store/useProjectStore';
-import { buildFileTree, calculateAAMetrics } from './utils/analysis';
+import { AITabPanel, AppModals, EmptyProjectState, SettingsTabPanel } from './components/AppPanels';
+import { useAppController } from './hooks/useAppController';
+import { buildFileTree } from './utils/analysis';
+import { cn } from './utils/cn';
 import Markdown from 'react-markdown';
-
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
 
 export default function App() {
   const {
@@ -36,300 +29,64 @@ export default function App() {
     searchQuery, treeSearch, activeTab, isFocusMode, aiReview, aiError,
     showFileModal, showIAModal,
     setProjectData, setSelectedNode, setSearchQuery, setTreeSearch,
-    setActiveTab, setIsFocusMode, processFiles, loadLastProject,
-    generateAIReview, generateAIContext, generateExecutiveView, generateSystemView, generateHotspotReport, generateTaskPackData, generateTaskPack, generateErrorContextPackData, generateErrorContextPack, generateSemanticSearchResults, generateImpactAnalysisData, generateProjectBrief, generateProjectMetadata, generateGraphGuide, generateTreeOnly, setShowFileModal, setShowIAModal,
+    setActiveTab, setIsFocusMode, processFiles,
+    generateAIReview, generateAIContext, generateExecutiveView, generateSystemView, generateHotspotReport, generateProjectBrief, generateProjectMetadata, generateGraphGuide, generateTreeOnly, setShowFileModal, setShowIAModal,
     generateAIVisionDocument, generateAIArchitectureNarrative, generateAIRefactorPriorities, generateAIAgentHandoff,
-    aiProvider, aiModel, customUrl, customKey, envKeys, checkEnvKeys,
+    aiProvider, aiModel, customUrl, customKey,
     setAiProvider, setAiModel, setCustomUrl, setCustomKey, setProjectGlobalMemory, setProjectFileMemory, projectName,
-    closeProject
-  } = useProjectStore();
-
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [isDesktopLayout, setIsDesktopLayout] = useState(false);
-  const [showMobilePanel, setShowMobilePanel] = useState(false);
-  const [agentTask, setAgentTask] = useState('Ajusta el perfil del usuario y encuentra los archivos que debo modificar.');
-  const [errorTraceInput, setErrorTraceInput] = useState('TypeError: Cannot read properties of undefined (reading \'map\')\n    at src/components/GraphCanvas.tsx:128:18\n    at src/App.tsx:512:7');
-  const [semanticQuery, setSemanticQuery] = useState('dónde vive autenticación');
-  const [exportSection, setExportSection] = useState<'guided' | 'task' | 'errors' | 'ai' | 'exports'>('guided');
-  const [isSavingAIDocs, setIsSavingAIDocs] = useState(false);
-  const [aiDocsSaveStatus, setAIDocsSaveStatus] = useState<string | null>(null);
-  const lastAutoSavedReviewRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    loadLastProject();
-    checkEnvKeys();
-  }, []);
-
-  useEffect(() => {
-    const media = window.matchMedia('(min-width: 1024px)');
-    const updateLayout = () => {
-      const desktop = media.matches;
-      setIsDesktopLayout(desktop);
-      if (desktop) {
-        setShowMobilePanel(false);
-      }
-    };
-
-    updateLayout();
-    media.addEventListener('change', updateLayout);
-    return () => media.removeEventListener('change', updateLayout);
-  }, []);
-
-  const hasServerKey = !!envKeys[aiProvider];
-  const hasEffectiveKey = aiProvider === 'ollama' || !!customKey || hasServerKey;
-  const aiReady = hasEffectiveKey && !!projectData;
-
-  // Manejar Escape para quitar foco de nodos
-  useEffect(() => {
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setSelectedNode(null);
-        setIsFocusMode(false);
-      }
-    };
-    window.addEventListener('keydown', handleEsc);
-    return () => window.removeEventListener('keydown', handleEsc);
-  }, [setSelectedNode, setIsFocusMode]);
-
-  const filteredNodes = useMemo(() => {
-    if (!projectData) return [];
-    let baseNodes = projectData.nodes;
-
-    if (searchQuery) {
-      baseNodes = baseNodes.filter(n =>
-        n.label.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        n.id.toLowerCase().includes(searchQuery.toLowerCase())
-      );
-    }
-
-    if (isFocusMode && selectedNode) {
-      const neighbors = new Set<string>([selectedNode.id]);
-      projectData.links.forEach((l: any) => {
-        const sId = typeof l.source === 'string' ? l.source : (l.source as any).id;
-        const tId = typeof l.target === 'string' ? l.target : (l.target as any).id;
-        if (sId === selectedNode.id) neighbors.add(tId);
-        if (tId === selectedNode.id) neighbors.add(sId);
-      });
-      return baseNodes.filter(n => neighbors.has(n.id));
-    }
-
-    return baseNodes;
-  }, [projectData, searchQuery, isFocusMode, selectedNode]);
-
-  const architectureMetrics = useMemo(() => {
-    if (!projectData) return null;
-    return calculateAAMetrics(projectData.files, projectData.links);
-  }, [projectData]);
-
-  const handleGraphNodeClick = useCallback((node: any) => {
-    setSelectedNode(node);
-    setShowFileModal(true);
-  }, [setSelectedNode, setShowFileModal]);
-
-  const getAIDocumentExports = useCallback(() => {
-    if (!aiReview) return [];
-
-    return [
-      { filename: `${projectName}_vision_ai.md`, content: generateAIVisionDocument() },
-      { filename: `${projectName}_architecture_narrative_ai.md`, content: generateAIArchitectureNarrative() },
-      { filename: `${projectName}_refactor_priorities_ai.md`, content: generateAIRefactorPriorities() },
-      { filename: `${projectName}_agent_handoff_ai.md`, content: generateAIAgentHandoff(agentTask) }
-    ].filter((file) => file.content.trim().length > 0);
-  }, [
-    aiReview,
-    projectName,
+    closeProject,
+    copied,
+    showSettingsModal,
+    setShowSettingsModal,
+    isDesktopLayout,
+    showMobilePanel,
+    setShowMobilePanel,
+    graphDensityMode,
+    setGraphDensityMode,
     agentTask,
-    generateAIVisionDocument,
-    generateAIArchitectureNarrative,
-    generateAIRefactorPriorities,
-    generateAIAgentHandoff
-  ]);
-
-  const saveFilesToContext = useCallback(async (files: { filename: string; content: string }[], mode: 'auto' | 'manual' = 'manual') => {
-    if (!files.length) return;
-
-    setIsSavingAIDocs(true);
-    if (mode === 'manual') {
-      setAIDocsSaveStatus(null);
-    }
-
-    try {
-      const response = await fetch('/api/context/export', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectName, files })
-      });
-
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || payload.error || 'No se pudieron guardar los documentos IA en contexto/');
-      }
-
-      const targetDirectory = payload.relative_directory || 'contexto/';
-      setAIDocsSaveStatus(`Guardados en ${targetDirectory}: ${payload.saved.join(', ')}`);
-    } catch (error: any) {
-      console.error('Error saving AI docs to contexto:', error);
-      setAIDocsSaveStatus(error.message || 'No se pudieron guardar los documentos IA en contexto/');
-    } finally {
-      setIsSavingAIDocs(false);
-    }
-  }, [projectName]);
-
-  useEffect(() => {
-    if (!aiReview) {
-      lastAutoSavedReviewRef.current = null;
-      return;
-    }
-
-    if (lastAutoSavedReviewRef.current === aiReview) {
-      return;
-    }
-
-    const files = getAIDocumentExports();
-    if (!files.length) return;
-
-    lastAutoSavedReviewRef.current = aiReview;
-    void saveFilesToContext(files, 'auto');
-  }, [aiReview, getAIDocumentExports, saveFilesToContext]);
-
-  const handleDownloadFile = (content: string, filename: string, type: string) => {
-    const blob = new Blob([content], { type });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  const copyToClipboard = () => {
-    const text = generateAIContext();
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const openPanelTab = (tab: 'details' | 'context' | 'files' | 'ia' | 'settings') => {
-    setActiveTab(tab);
-    if (!isDesktopLayout) {
-      setShowMobilePanel(true);
-    }
-  };
-
-  const taskPackData = generateTaskPackData(agentTask);
-  const taskPackPreview = generateTaskPack(agentTask);
-  const errorContextPackData = generateErrorContextPackData(errorTraceInput);
-  const errorContextPackPreview = generateErrorContextPack(errorTraceInput);
-  const semanticSearchResults = generateSemanticSearchResults(semanticQuery);
-  const impactAnalysisData = selectedNode ? generateImpactAnalysisData(selectedNode.id) : null;
-  const activeProjectMemory = projectMemory[projectName || ''] || { globalNote: '', fileNotes: {} };
-  const selectedNodeMemory = selectedNode ? (activeProjectMemory.fileNotes[selectedNode.id] || '') : '';
-
-  const focusNodeByProjectPath = useCallback((projectPath: string) => {
-    if (!projectData || !projectPath) return;
-
-    const normalized = projectPath.replace(/\\/g, '/').toLowerCase();
-    const projectPrefix = `${(projectName || '').replace(/\\/g, '/').toLowerCase()}/`;
-    const relativePath = normalized.startsWith(projectPrefix) ? normalized.slice(projectPrefix.length) : normalized;
-
-    const node = projectData.nodes.find((item) => {
-      const nodePath = item.id.replace(/\\/g, '/').toLowerCase();
-      return nodePath === relativePath || nodePath === normalized || normalized.endsWith(`/${nodePath}`);
-    });
-
-    if (!node) return;
-    setSelectedNode(node);
-    setIsFocusMode(true);
-    setActiveTab('details');
-  }, [projectData, projectName, setActiveTab, setIsFocusMode, setSelectedNode]);
+    setAgentTask,
+    errorTraceInput,
+    setErrorTraceInput,
+    semanticQuery,
+    setSemanticQuery,
+    exportSection,
+    setExportSection,
+    isSavingAIDocs,
+    aiDocsSaveStatus,
+    setAIDocsSaveStatus,
+    hasEffectiveKey,
+    aiReady,
+    filteredNodes,
+    architectureMetrics,
+    handleGraphNodeClick,
+    saveFilesToContext,
+    handleDownloadFile,
+    copyToClipboard,
+    openPanelTab,
+    taskPackData,
+    taskPackPreview,
+    errorContextPackData,
+    errorContextPackPreview,
+    semanticSearchResults,
+    impactAnalysisData,
+    architectureSnapshot,
+    architectureSnapshotPreview,
+    architectureSnapshotTokenEstimate,
+    activeProjectMemory,
+    selectedNodeMemory,
+    focusNodeByProjectPath
+  } = useAppController();
+  const [exportAssetTab, setExportAssetTab] = React.useState<'snapshot' | 'brief' | 'technical' | 'guide' | 'raw'>('snapshot');
 
   if (!projectData) {
     return (
-      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-brand-bg p-4 sm:p-6">
-        <div className="absolute left-[-10%] top-[-10%] h-[40%] w-[40%] rounded-full bg-brand-primary/10 blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] h-[40%] w-[40%] rounded-full bg-brand-secondary/10 blur-[120px]" />
-
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="relative z-10 w-full max-w-3xl text-center"
-        >
-          <div className="mb-12 inline-block relative">
-            <div className="absolute -inset-4 bg-brand-primary/20 blur-xl rounded-full animate-pulse" />
-            <Network className="h-16 w-16 text-brand-primary animate-float sm:h-20 sm:w-20 lg:h-24 lg:w-24" strokeWidth={1} />
-            <div className="absolute -bottom-2 -right-2 rounded-2xl border border-gray-800 bg-brand-surface p-2 shadow-2xl sm:p-3">
-              <Code2 className="h-6 w-6 text-brand-secondary sm:h-8 sm:w-8" />
-            </div>
-          </div>
-
-          <h1 className="mb-6 text-4xl font-bold tracking-tight text-white font-display sm:text-5xl lg:text-6xl">
-            ProjectGrapher <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-primary to-brand-secondary">AI</span>
-          </h1>
-
-          <p className="mx-auto mb-10 max-w-xl text-base leading-relaxed text-gray-400 font-sans sm:text-lg lg:mb-12 lg:text-xl">
-            Analiza la arquitectura de tu proyecto localmente. Visualiza dependencias y genera prompts eficientes para tus agentes de IA.
-          </p>
-
-          <div className="flex flex-col items-center gap-6">
-            <div className="relative max-w-sm group w-full">
-              <div className="absolute -inset-1 bg-gradient-to-r from-brand-primary to-brand-secondary rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-500" />
-              <label className={cn(
-                "relative flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-8 transition-all duration-300 sm:p-10 lg:p-12",
-                "bg-brand-surface/50 border-gray-800 hover:border-brand-primary/50 hover:bg-brand-surface/80",
-                isProcessing && "pointer-events-none"
-              )}>
-                {isProcessing ? (
-                  <div className="flex flex-col items-center gap-4">
-                    <Loader2 className="w-12 h-12 text-brand-primary animate-spin" />
-                    <p className="text-lg font-medium text-white">Indexando Carpeta...</p>
-                    <div className="flex items-center gap-2 px-3 py-1 bg-brand-primary/10 border border-brand-primary/20 rounded-full">
-                      <Database className="w-3 h-3 text-brand-primary" />
-                      <span className="text-[10px] font-bold text-brand-primary uppercase tracking-widest">Motor Local Activo (Sin IA)</span>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <Upload className="w-12 h-12 text-gray-500 mb-4 group-hover:text-brand-primary transition-colors" />
-                    <p className="mb-2 text-base font-medium text-white sm:text-lg">Seleccionar Carpeta</p>
-                    <input
-                      type="file"
-                      className="hidden"
-                      // @ts-ignore
-                      webkitdirectory="true"
-                      directory="true"
-                      multiple
-                      onChange={(e) => e.target.files && processFiles(e.target.files)}
-                    />
-                  </>
-                )}
-              </label>
-            </div>
-
-            <button
-              onClick={() => setShowSettingsModal(true)}
-              className="flex items-center gap-2 text-gray-500 hover:text-white transition-colors text-sm font-medium"
-            >
-              <Sparkles className="w-4 h-4" /> Configurar Proveedor de IA
-            </button>
-          </div>
-
-          <Modal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} title="Configuración de IA">
-            <div className="space-y-6">
-              <AIConfig />
-              <button
-                onClick={() => setShowSettingsModal(false)}
-                className="w-full py-4 bg-brand-primary text-white rounded-2xl font-bold hover:brightness-110 transition-all"
-              >
-                Guardar y Cerrar
-              </button>
-            </div>
-          </Modal>
-        </motion.div>
-      </div>
+      <EmptyProjectState
+        cn={cn}
+        isProcessing={isProcessing}
+        onProcessFiles={processFiles}
+        showSettingsModal={showSettingsModal}
+        setShowSettingsModal={setShowSettingsModal}
+      />
     );
   }
 
@@ -347,6 +104,15 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setGraphDensityMode(graphDensityMode === 'focused' ? 'auto' : 'focused')}
+            className={cn(
+              "rounded-xl border px-3 py-2 text-[10px] font-bold transition-all",
+              graphDensityMode === 'focused' ? "border-cyan-400 bg-cyan-400 text-black" : "border-gray-800 text-gray-400"
+            )}
+          >
+            {graphDensityMode === 'focused' ? 'Focus View' : 'Auto View'}
+          </button>
           <button
             onClick={() => setIsFocusMode(!isFocusMode)}
             className={cn(
@@ -467,6 +233,22 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2 rounded-full border border-gray-800 bg-brand-surface/60 p-1">
+              {(['auto', 'focused', 'expanded'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => setGraphDensityMode(mode)}
+                  className={cn(
+                    "rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
+                    graphDensityMode === mode
+                      ? "bg-cyan-400 text-black"
+                      : "text-gray-500 hover:text-white"
+                  )}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
             <button
               onClick={() => setIsFocusMode(!isFocusMode)}
               className={cn(
@@ -540,6 +322,7 @@ export default function App() {
               onNodeClick={handleGraphNodeClick}
               selectedNodeId={selectedNode?.id || null}
               isFocusMode={isFocusMode}
+              graphDensityMode={graphDensityMode}
             />
           </ErrorBoundary>
         </div>
@@ -679,6 +462,43 @@ export default function App() {
                     <p className="text-xs text-gray-400 leading-relaxed relative z-10">
                       Estás viendo un mapeo <strong className="font-semibold text-white">100% determinista</strong> generado mediante el análisis estático de dependencias (AST). Este proceso no utiliza IA, garantizando precisión técnica absoluta en la estructura del grafo.
                     </p>
+                  </div>
+
+                  <div className="space-y-3 rounded-3xl border border-cyan-500/15 bg-cyan-500/5 p-6">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-cyan-400">Graph Reading Mode</div>
+                        <h4 className="mt-2 text-lg font-bold text-white">Modo actual: {graphDensityMode}</h4>
+                      </div>
+                      <div className="rounded-full border border-cyan-500/20 bg-black/20 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">
+                        adaptive
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      <div className="rounded-2xl border border-white/6 bg-black/20 p-3 text-xs text-gray-300">
+                        <span className="font-bold text-white">Auto</span>: balancea rendimiento y contexto.
+                      </div>
+                      <div className="rounded-2xl border border-white/6 bg-black/20 p-3 text-xs text-gray-300">
+                        <span className="font-bold text-white">Focused</span>: menos ruido, mejor lectura.
+                      </div>
+                      <div className="rounded-2xl border border-white/6 bg-black/20 p-3 text-xs text-gray-300">
+                        <span className="font-bold text-white">Expanded</span>: muestra más etiquetas y conexiones.
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      <div className="rounded-2xl border border-white/6 bg-black/20 p-3 text-xs text-gray-300">
+                        <span className="inline-block h-3 w-3 rounded-full bg-violet-400 mr-2 align-middle" />
+                        Seleccionado
+                      </div>
+                      <div className="rounded-2xl border border-white/6 bg-black/20 p-3 text-xs text-gray-300">
+                        <span className="inline-block h-3 w-3 rounded-full bg-amber-400 mr-2 align-middle" />
+                        Hotspot importante
+                      </div>
+                      <div className="rounded-2xl border border-white/6 bg-black/20 p-3 text-xs text-gray-300">
+                        <span className="inline-block h-3 w-3 rounded-full bg-sky-500 mr-2 align-middle" />
+                        Nodo normal por tipo
+                      </div>
+                    </div>
                   </div>
 
                   <div className="space-y-4 rounded-3xl border border-cyan-500/15 bg-cyan-500/5 p-6">
@@ -1186,128 +1006,232 @@ export default function App() {
                 {exportSection === 'exports' && (
                 <>
                 <div className="space-y-3 rounded-3xl border border-white/6 bg-black/20 p-4">
-                  <div className="text-[10px] font-black uppercase tracking-[0.22em] text-sky-400">Exportes Base</div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.22em] text-sky-400">Centro de Exportacion</div>
                   <p className="text-sm leading-relaxed text-gray-400">
-                    Artefactos determinísticos para compartir, archivar o pasar a otro agente sin depender de una auditoría IA.
+                    Exportes determinísticos para trabajar solo con tu proyecto local. La idea aquí no es depender de IA, sino darte salidas claras para leer, compartir o automatizar sin adivinar qué hace cada botón.
                   </p>
                 </div>
 
                 <div className="space-y-4">
-                   <div className="group flex flex-col gap-4 rounded-[2rem] border border-gray-800 bg-brand-bg/40 p-5 transition-all hover:border-brand-primary/50 sm:flex-row sm:items-center sm:justify-between sm:p-6">
-                      <div className="flex items-center gap-5">
-                         <div className="p-4 bg-brand-primary/10 rounded-2xl group-hover:bg-brand-primary/20 transition-colors">
-                            <Database className="w-6 h-6 text-brand-primary" />
-                         </div>
-                         <div>
-                            <h4 className="text-white font-bold">Contexto de Arquitectura</h4>
-                            <p className="text-xs text-gray-500">Prompt optimizado por tokens</p>
-                         </div>
-                      </div>
-                      <button 
-                        onClick={() => handleDownloadFile(generateAIContext(), `${projectName}_snapshot.md`, 'text/markdown')}
-                        className="p-3 text-gray-500 hover:text-white transition-colors"
-                      >
-                         <Download className="w-6 h-6" />
-                      </button>
-                   </div>
-
-                   <div className="group flex flex-col gap-4 rounded-[2rem] border border-gray-800 bg-brand-bg/40 p-5 transition-all hover:border-sky-500/50 sm:flex-row sm:items-center sm:justify-between sm:p-6">
-                      <div className="flex items-center gap-5">
-                         <div className="p-4 bg-sky-500/10 rounded-2xl group-hover:bg-sky-500/20 transition-colors">
-                            <FileText className="w-6 h-6 text-sky-400" />
-                         </div>
-                         <div>
-                            <h4 className="text-white font-bold">Resumen Ejecutivo</h4>
-                            <p className="text-xs text-gray-500">Brief local para otros agentes</p>
-                         </div>
-                      </div>
-                      <button 
-                        onClick={() => handleDownloadFile(generateProjectBrief(), `${projectName}_brief.md`, 'text/markdown')}
-                        className="p-3 text-gray-500 hover:text-white transition-colors"
-                      >
-                         <Download className="w-6 h-6" />
-                      </button>
-                   </div>
-
-                   <div className="group flex flex-col gap-4 rounded-[2rem] border border-gray-800 bg-brand-bg/40 p-5 transition-all hover:border-amber-500/50 sm:flex-row sm:items-center sm:justify-between sm:p-6">
-                      <div className="flex items-center gap-5">
-                         <div className="p-4 bg-amber-500/10 rounded-2xl group-hover:bg-amber-500/20 transition-colors">
-                            <Code2 className="w-6 h-6 text-amber-400" />
-                         </div>
-                         <div>
-                            <h4 className="text-white font-bold">Resumen Técnico JSON</h4>
-                            <p className="text-xs text-gray-500">Ficha local de stack, capas y hotspots</p>
-                         </div>
-                      </div>
-                      <button 
-                        onClick={() => handleDownloadFile(generateProjectMetadata(), `${projectName}_project_summary.json`, 'application/json')}
-                        className="p-3 text-gray-500 hover:text-white transition-colors"
-                      >
-                         <Download className="w-6 h-6" />
-                      </button>
-                   </div>
-
-                   <div className="group flex flex-col gap-4 rounded-[2rem] border border-gray-800 bg-brand-bg/40 p-5 transition-all hover:border-emerald-500/50 sm:flex-row sm:items-center sm:justify-between sm:p-6">
-                      <div className="flex items-center gap-5">
-                         <div className="p-4 bg-emerald-500/10 rounded-2xl group-hover:bg-emerald-500/20 transition-colors">
-                            <Share2 className="w-6 h-6 text-emerald-400" />
-                         </div>
-                         <div>
-                            <h4 className="text-white font-bold">Guía del Grafo</h4>
-                            <p className="text-xs text-gray-500">Explica conexiones útiles para otro agente</p>
-                         </div>
-                      </div>
-                      <button 
-                        onClick={() => handleDownloadFile(generateGraphGuide(), `${projectName}_graph_guide.md`, 'text/markdown')}
-                        className="p-3 text-gray-500 hover:text-white transition-colors"
-                      >
-                         <Download className="w-6 h-6" />
-                      </button>
-                   </div>
-
-                   <div className="group flex flex-col gap-4 rounded-[2rem] border border-gray-800 bg-brand-bg/40 p-5 transition-all hover:border-brand-secondary/50 sm:flex-row sm:items-center sm:justify-between sm:p-6">
-                      <div className="flex items-center gap-5">
-                         <div className="p-4 bg-brand-secondary/10 rounded-2xl group-hover:bg-brand-secondary/20 transition-colors">
-                            <Network className="w-6 h-6 text-brand-secondary" />
-                         </div>
-                         <div>
-                            <h4 className="text-white font-bold">Mapa Arquitectónico JSON</h4>
-                            <p className="text-xs text-gray-500">Relaciones locales entre archivos</p>
-                         </div>
-                      </div>
-                      <button 
-                        onClick={() => handleDownloadFile(JSON.stringify(projectData, null, 2), `${projectName}_architecture_map.json`, 'application/json')}
-                        className="p-3 text-gray-500 hover:text-white transition-colors"
-                      >
-                         <Download className="w-6 h-6" />
-                      </button>
-                   </div>
-                </div>
-
-                <div className="space-y-4 pt-4">
-                  <div className="flex flex-col gap-4 rounded-3xl border border-white/5 bg-brand-bg/20 p-4 lg:flex-row lg:items-center lg:justify-between">
-                    <div className="flex items-center gap-4">
-                       <h5 className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em] w-24 leading-tight">Vista Previa Snapshot</h5>
-                       <div className="px-4 py-2 bg-brand-primary/10 text-brand-primary text-[10px] font-black rounded-full border border-brand-primary/20 flex flex-col items-center justify-center min-w-[80px]">
-                          <span className="opacity-60 text-[8px]">~{Math.round(generateAIContext().length / 4).toLocaleString()}</span>
-                          <span>TOKENS</span>
-                       </div>
-                    </div>
-                    
-                    <div className="flex items-center gap-6">
-                       <button 
-                         onClick={() => handleDownloadFile(generateAIContext(), `${projectName}_snapshot.md`, 'text/markdown')}
-                         className="flex items-center gap-2 text-[10px] font-black text-emerald-500 hover:text-emerald-400 transition-colors uppercase tracking-widest group"
-                       >
-                         <Download className="w-4 h-4 group-hover:-translate-y-0.5 transition-transform" />
-                         <span>Descargar Snapshot</span>
-                       </button>
-                    </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setExportAssetTab('snapshot')}
+                      className={cn(
+                        "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
+                        exportAssetTab === 'snapshot' ? "border-brand-primary bg-brand-primary text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-brand-primary/40 hover:text-white"
+                      )}
+                    >
+                      Snapshot
+                    </button>
+                    <button
+                      onClick={() => setExportAssetTab('brief')}
+                      className={cn(
+                        "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
+                        exportAssetTab === 'brief' ? "border-sky-500 bg-sky-500 text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-sky-500/40 hover:text-white"
+                      )}
+                    >
+                      Brief
+                    </button>
+                    <button
+                      onClick={() => setExportAssetTab('technical')}
+                      className={cn(
+                        "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
+                        exportAssetTab === 'technical' ? "border-amber-500 bg-amber-500 text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-amber-500/40 hover:text-white"
+                      )}
+                    >
+                      Technical JSON
+                    </button>
+                    <button
+                      onClick={() => setExportAssetTab('guide')}
+                      className={cn(
+                        "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
+                        exportAssetTab === 'guide' ? "border-emerald-500 bg-emerald-500 text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-emerald-500/40 hover:text-white"
+                      )}
+                    >
+                      Graph Guide
+                    </button>
+                    <button
+                      onClick={() => setExportAssetTab('raw')}
+                      className={cn(
+                        "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
+                        exportAssetTab === 'raw' ? "border-brand-secondary bg-brand-secondary text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-brand-secondary/40 hover:text-white"
+                      )}
+                    >
+                      Raw Graph
+                    </button>
                   </div>
-                  
-                  <div className="group relative max-h-[400px] overflow-auto rounded-[2rem] border border-white/5 bg-black/40 p-4 font-mono text-[10px] text-gray-400 custom-scrollbar sm:p-6 lg:p-7 xl:p-8">
-                    <pre className="whitespace-pre leading-relaxed">{generateAIContext()}</pre>
-                  </div>
+
+                  {exportAssetTab === 'snapshot' && (
+                    <div className="space-y-4">
+                      <div className="rounded-[2rem] border border-brand-primary/20 bg-brand-primary/[0.06] p-5 sm:p-6">
+                        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="flex items-start gap-4">
+                            <div className="rounded-2xl bg-brand-primary/10 p-4">
+                              <Database className="h-6 w-6 text-brand-primary" />
+                            </div>
+                            <div className="space-y-2">
+                              <div>
+                                <h4 className="text-white font-bold">Snapshot Arquitectónico</h4>
+                                <p className="text-xs text-gray-400">El export principal. Resume estructura, hotspots, stack, relaciones y contexto útil del proyecto.</p>
+                              </div>
+                              <div className="text-[11px] leading-relaxed text-gray-500">
+                                Úsalo cuando quieras pasarle el proyecto a otra persona, abrir una nueva sesión o guardar una foto técnica del estado actual sin depender de una auditoría IA.
+                              </div>
+                            </div>
+                          </div>
+                        <button
+                          onClick={() => handleDownloadFile(architectureSnapshot, `${projectName}_snapshot.md`, 'text/markdown')}
+                          className="inline-flex max-w-full self-start sm:self-center items-center justify-center gap-2 rounded-xl border border-brand-primary/30 bg-brand-primary/10 px-3 py-2 text-xs font-bold text-brand-primary transition-all hover:bg-brand-primary hover:text-white"
+                        >
+                          <Download className="h-3.5 w-3.5 shrink-0" />
+                          Descargar
+                        </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-4 pt-1">
+                        <div className="flex flex-col gap-4 rounded-3xl border border-white/5 bg-brand-bg/20 p-4 lg:flex-row lg:items-center lg:justify-between">
+                          <div className="flex items-center gap-4">
+                             <h5 className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em] w-24 leading-tight">Vista Previa</h5>
+                             <div className="px-4 py-2 bg-brand-primary/10 text-brand-primary text-[10px] font-black rounded-full border border-brand-primary/20 flex flex-col items-center justify-center min-w-[80px]">
+                                <span className="opacity-60 text-[8px]">~{architectureSnapshotTokenEstimate.toLocaleString()}</span>
+                                <span>TOKENS</span>
+                             </div>
+                          </div>
+                          
+                          <div className="flex items-center gap-3">
+                             <button
+                               onClick={copyToClipboard}
+                               className="flex items-center gap-2 text-[10px] font-black text-sky-400 hover:text-sky-300 transition-colors uppercase tracking-widest"
+                             >
+                               <span>{copied ? 'Copiado' : 'Copiar Snapshot'}</span>
+                             </button>
+                          </div>
+                        </div>
+                        
+                        <div className="group relative max-h-[400px] overflow-auto rounded-[2rem] border border-white/5 bg-black/40 p-4 font-mono text-[10px] text-gray-400 custom-scrollbar sm:p-6 lg:p-7 xl:p-8">
+                          <pre className="whitespace-pre leading-relaxed">{architectureSnapshotPreview}</pre>
+                          {architectureSnapshotPreview !== architectureSnapshot && (
+                            <div className="mt-4 border-t border-white/6 pt-4 text-[10px] uppercase tracking-[0.2em] text-gray-500">
+                              Vista recortada. El archivo descargado incluye el snapshot completo.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {exportAssetTab === 'brief' && (
+                    <div className="rounded-[2rem] border border-sky-500/20 bg-sky-500/[0.05] p-5 sm:p-6">
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex items-start gap-4">
+                          <div className="rounded-2xl bg-sky-500/10 p-4">
+                            <FileText className="h-6 w-6 text-sky-400" />
+                          </div>
+                          <div className="space-y-2">
+                            <div>
+                              <h4 className="text-white font-bold">Project Brief</h4>
+                              <p className="text-xs text-gray-400">Versión corta para humanos.</p>
+                            </div>
+                            <div className="text-[11px] leading-relaxed text-gray-500">
+                              Bueno para ubicarse rápido: qué hace el proyecto, qué stack usa y por dónde empezar. Es el archivo más simple para onboarding.
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleDownloadFile(generateProjectBrief(), `${projectName}_brief.md`, 'text/markdown')}
+                          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm font-bold text-sky-300 transition-all hover:bg-sky-500 hover:text-black"
+                        >
+                          <Download className="h-4 w-4" />
+                          Descargar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {exportAssetTab === 'technical' && (
+                    <div className="rounded-[2rem] border border-amber-500/20 bg-amber-500/[0.05] p-5 sm:p-6">
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex items-start gap-4">
+                          <div className="rounded-2xl bg-amber-500/10 p-4">
+                            <Activity className="h-6 w-6 text-amber-400" />
+                          </div>
+                          <div className="space-y-2">
+                            <div>
+                              <h4 className="text-white font-bold">Technical Summary JSON</h4>
+                              <p className="text-xs text-gray-400">Ficha compacta y determinista.</p>
+                            </div>
+                            <div className="text-[11px] leading-relaxed text-gray-500">
+                              Sirve para scripts, integraciones futuras o agentes que necesitan estructura clara sin leer markdown largo.
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleDownloadFile(generateProjectMetadata(), `${projectName}_project_summary.json`, 'application/json')}
+                          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm font-bold text-amber-300 transition-all hover:bg-amber-500 hover:text-black"
+                        >
+                          <Download className="h-4 w-4" />
+                          Descargar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {exportAssetTab === 'guide' && (
+                    <div className="rounded-[2rem] border border-emerald-500/20 bg-emerald-500/[0.05] p-5 sm:p-6">
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex items-start gap-4">
+                          <div className="rounded-2xl bg-emerald-500/10 p-4">
+                            <Share2 className="h-6 w-6 text-emerald-400" />
+                          </div>
+                          <div className="space-y-2">
+                            <div>
+                              <h4 className="text-white font-bold">Graph Guide</h4>
+                              <p className="text-xs text-gray-400">Guía textual para leer el grafo.</p>
+                            </div>
+                            <div className="text-[11px] leading-relaxed text-gray-500">
+                              Úsalo si quieres entender orquestadores, núcleo compartido y orden de lectura del mapa sin abrir el canvas.
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleDownloadFile(generateGraphGuide(), `${projectName}_graph_guide.md`, 'text/markdown')}
+                          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-bold text-emerald-300 transition-all hover:bg-emerald-500 hover:text-black"
+                        >
+                          <Download className="h-4 w-4" />
+                          Descargar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {exportAssetTab === 'raw' && (
+                    <div className="rounded-[2rem] border border-brand-secondary/20 bg-brand-secondary/[0.05] p-5 sm:p-6">
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex items-start gap-4">
+                          <div className="rounded-2xl bg-brand-secondary/10 p-4">
+                            <Network className="h-6 w-6 text-brand-secondary" />
+                          </div>
+                          <div className="space-y-2">
+                            <div>
+                              <h4 className="text-white font-bold">Raw Graph JSON</h4>
+                              <p className="text-xs text-gray-400">Dump técnico del grafo completo.</p>
+                            </div>
+                            <div className="text-[11px] leading-relaxed text-gray-500">
+                              Esto ya es más interno: útil para depurar, reusar datos o construir otra vista encima del grafo.
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleDownloadFile(JSON.stringify(projectData, null, 2), `${projectName}_architecture_map.json`, 'application/json')}
+                          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-brand-secondary/30 bg-brand-secondary/10 px-4 py-3 text-sm font-bold text-brand-secondary transition-all hover:bg-brand-secondary hover:text-black"
+                        >
+                          <Download className="h-4 w-4" />
+                          Descargar
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 </>
                 )}
@@ -1316,110 +1240,33 @@ export default function App() {
           )}
 
           {activeTab === 'ia' && (
-            <motion.div key="ia" className="flex-1 flex flex-col h-full overflow-hidden">
-              <div className="border-b border-gray-800 p-4 sm:p-6 lg:p-7 xl:p-8">
-                <h3 className="text-2xl font-bold text-white mb-2">Auditoría de IA</h3>
-                <p className="text-xs text-gray-500">Resultados del análisis arquitectónico basado en el modelo seleccionado.</p>
-              </div>
-
-              <div className="custom-scrollbar flex-1 overflow-y-auto p-4 sm:p-6 lg:p-7 xl:p-8">
-                {isReviewing ? (
-                  <div className="py-20 flex flex-col items-center gap-4">
-                    <Loader2 className="w-12 h-12 text-brand-primary animate-spin" />
-                    <p className="text-white font-bold">Generando reporte...</p>
-                  </div>
-                ) : aiError ? (
-                  <div className="p-6 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-400 text-sm">
-                    {aiError}
-                  </div>
-                ) : aiReview ? (
-                  <div className="prose prose-invert prose-sm max-w-none">
-                    <Markdown>{aiReview}</Markdown>
-                  </div>
-                ) : (
-                  <div className="text-center py-10 space-y-8">
-                    {!hasEffectiveKey && (
-                      <div className="bg-amber-500/10 border border-amber-500/20 p-6 rounded-3xl text-left space-y-3">
-                         <div className="flex items-center gap-2 text-amber-500">
-                            <AlertCircle className="w-5 h-5" />
-                            <span className="text-sm font-bold uppercase tracking-wider">Configuración Requerida</span>
-                         </div>
-                         <p className="text-xs text-amber-200/70 leading-relaxed">
-                            No has configurado una API Key para <strong>{aiProvider.toUpperCase()}</strong>. Para generar reportes automáticos, necesitas añadir tu llave en los ajustes.
-                         </p>
-                         <p className="text-[11px] text-amber-100/60 leading-relaxed">
-                            El análisis del grafo, snapshots, task packs y vistas determinísticas siguen disponibles sin IA. Esta pestaña solo habilita el enriquecimiento con modelo.
-                         </p>
-                         <button 
-                           onClick={() => setActiveTab('settings')}
-                           className="text-[10px] font-bold text-amber-500 hover:underline flex items-center gap-1"
-                         >
-                            Ir a Configuración <ChevronRight className="w-3 h-3" />
-                         </button>
-                      </div>
-                    )}
-
-                    <div className="py-10">
-                      <Sparkles className="w-12 h-12 text-gray-800 mx-auto mb-4" />
-                      <p className="text-gray-500 text-sm mb-6">No hay reportes generados aún.</p>
-                      <button
-                        onClick={generateAIReview}
-                        disabled={!aiReady}
-                        className={cn(
-                          "px-8 py-3 rounded-2xl text-sm font-bold transition-all",
-                          (!aiReady)
-                            ? "bg-gray-800 text-gray-500 cursor-not-allowed"
-                            : "bg-brand-primary text-white hover:brightness-110 shadow-lg shadow-brand-primary/20"
-                        )}
-                      >
-                        Generar Auditoría Ahora
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </motion.div>
+            <AITabPanel
+              isReviewing={isReviewing}
+              aiError={aiError}
+              aiReview={aiReview}
+              hasEffectiveKey={hasEffectiveKey}
+              aiProvider={aiProvider}
+              aiReady={aiReady}
+              onOpenSettings={() => setActiveTab('settings')}
+              onGenerateReview={generateAIReview}
+              cn={cn}
+            />
           )}
 
-          {activeTab === 'settings' && (
-            <motion.div key="settings" className="custom-scrollbar h-full space-y-6 overflow-y-auto p-4 sm:p-6 lg:p-7 xl:p-8">
-              <h3 className="text-2xl font-bold text-white">Configuración AI</h3>
-              <AIConfig />
-            </motion.div>
-          )}
+          {activeTab === 'settings' && <SettingsTabPanel />}
         </AnimatePresence>
       </aside>
 
-      {/* --- MODALS --- */}
-
-      <Modal isOpen={showFileModal && !!selectedNode} onClose={() => setShowFileModal(false)} title={selectedNode?.label || ""}>
-        {selectedNode && (
-          <div className="space-y-8">
-            <div className="bg-white/5 p-4 rounded-2xl border border-white/5 font-mono text-sm text-white break-all">
-              {selectedNode.id}
-            </div>
-            <div className="bg-brand-bg rounded-3xl border border-white/5 overflow-hidden">
-              <div className="p-4 border-b border-white/5 text-[10px] text-gray-500 uppercase">Contenido del Archivo</div>
-              <pre className="p-6 text-xs text-gray-400 font-mono overflow-x-auto">{selectedNode.data.content}</pre>
-            </div>
-          </div>
-        )}
-      </Modal>
-
-      <Modal isOpen={showIAModal} onClose={() => setShowIAModal(false)} title="Auditoría Arquitectónica">
-        {isReviewing ? (
-          <div className="py-20 flex flex-col items-center gap-4">
-            <Loader2 className="w-12 h-12 text-brand-primary animate-spin" />
-            <p className="text-white font-bold">Analizando Grafo...</p>
-          </div>
-        ) : aiError ? (
-          <div className="py-20 text-center text-red-400">{aiError}</div>
-        ) : aiReview ? (
-          <div className="prose prose-invert max-w-none prose-sm md:prose-base">
-            <Markdown>{aiReview}</Markdown>
-          </div>
-        ) : null}
-      </Modal>
+      <AppModals
+        showFileModal={showFileModal}
+        selectedNode={selectedNode}
+        setShowFileModal={setShowFileModal}
+        showIAModal={showIAModal}
+        setShowIAModal={setShowIAModal}
+        isReviewing={isReviewing}
+        aiError={aiError}
+        aiReview={aiReview}
+      />
 
     </div>
   );

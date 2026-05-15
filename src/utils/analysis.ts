@@ -38,6 +38,95 @@ export const getExtension = (filename: string) => {
   return parts.length > 1 ? `.${parts.pop()?.toLowerCase()}` : '';
 };
 
+export const normalizeProjectPath = (value: string) =>
+  value
+    .replace(/\\/g, '/')
+    .replace(/^[a-z]:\//i, '')
+    .replace(/^\.\/+/, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+/g, '/')
+    .toLowerCase();
+
+export const stripKnownExtension = (value: string) =>
+  value.replace(/\.(js|jsx|ts|tsx|mjs|cjs|py|go|rs|java|cs|php|rb|vue|svelte|html|css|scss|sass|less)$/i, '');
+
+const createLookupAliases = (file: ProjectFile) => {
+  const normalizedPath = normalizeProjectPath(file.path);
+  const withoutExt = stripKnownExtension(normalizedPath);
+  const parts = withoutExt.split('/').filter(Boolean);
+  const basename = parts[parts.length - 1] || withoutExt;
+  const parentAndBase = parts.slice(-2).join('/');
+
+  return [
+    normalizedPath,
+    withoutExt,
+    basename,
+    parentAndBase
+  ].filter(Boolean);
+};
+
+export const createProjectFileResolver = (files: ProjectFile[]) => {
+  const aliasMap = new Map<string, ProjectFile[]>();
+
+  files.forEach((file) => {
+    createLookupAliases(file).forEach((alias) => {
+      const current = aliasMap.get(alias) || [];
+      current.push(file);
+      aliasMap.set(alias, current);
+    });
+  });
+
+  return (rawDependency: string, sourcePath?: string) => {
+    const normalizedDep = stripKnownExtension(
+      normalizeProjectPath(rawDependency.split('?')[0].split('#')[0])
+    );
+
+    if (!normalizedDep || normalizedDep.startsWith('@') || normalizedDep.includes('node_modules')) {
+      return null;
+    }
+
+    const candidates = new Set<ProjectFile>();
+    const depParts = normalizedDep.split('/').filter(Boolean);
+    const depBase = depParts[depParts.length - 1] || normalizedDep;
+    const depParentAndBase = depParts.slice(-2).join('/');
+
+    [
+      normalizedDep,
+      depBase,
+      depParentAndBase
+    ].filter(Boolean).forEach((key) => {
+      (aliasMap.get(key) || []).forEach((file) => candidates.add(file));
+    });
+
+    const sourceDir = sourcePath
+      ? normalizeProjectPath(sourcePath).split('/').slice(0, -1).join('/')
+      : '';
+
+    let bestMatch: ProjectFile | null = null;
+    let bestScore = -1;
+
+    candidates.forEach((candidate) => {
+      let score = 0;
+      const candidatePath = normalizeProjectPath(candidate.path);
+      const candidateWithoutExt = stripKnownExtension(candidatePath);
+
+      if (candidateWithoutExt === normalizedDep) score += 6;
+      if (candidatePath.endsWith(`${normalizedDep}${candidate.ext}`)) score += 5;
+      if (candidateWithoutExt.endsWith(normalizedDep)) score += 4;
+      if (candidate.name.toLowerCase() === depBase.toLowerCase() || candidate.name.toLowerCase().startsWith(`${depBase.toLowerCase()}.`)) score += 3;
+      if (depParentAndBase && candidateWithoutExt.endsWith(depParentAndBase)) score += 3;
+      if (sourceDir && candidatePath.startsWith(sourceDir)) score += 1;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = candidate;
+      }
+    });
+
+    return bestScore > 0 ? bestMatch : null;
+  };
+};
+
 export const findDependencies = (content: string, filename: string): string[] => {
   const deps: string[] = [];
   const ext = getExtension(filename);
