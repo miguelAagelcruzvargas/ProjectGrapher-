@@ -6,6 +6,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
+  const apiTarget = env.VITE_API_URL || `http://localhost:${env.PORT || '8080'}`;
   return {
     plugins: [
       react(), 
@@ -53,7 +54,7 @@ export default defineConfig(({mode}) => {
       hmr: process.env.DISABLE_HMR !== 'true',
       proxy: {
         '/api': {
-          target: 'http://localhost:8080',
+          target: apiTarget,
           changeOrigin: true,
         }
       }

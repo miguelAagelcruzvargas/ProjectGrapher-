@@ -23,6 +23,241 @@ const LANGUAGE_MAP: Record<string, string> = {
   '.svelte': 'Svelte'
 };
 
+const getGeneratedAtLabel = () => new Date().toLocaleString();
+
+const buildExportMetadataBlock = (projectName: string, fileLabel: string) => {
+  const generatedAt = getGeneratedAtLabel();
+  let text = `## Metadata\n`;
+  text += `- Proyecto: ${projectName}\n`;
+  text += `- Archivo: ${fileLabel}\n`;
+  text += `- Generado en: ${generatedAt}\n`;
+  text += `- Modo: deterministic local analysis\n`;
+  text += `- Vigencia: úsalo como mapa de referencia y valida contra el código activo antes de tomar decisiones delicadas.\n\n`;
+  return text;
+};
+
+const findProjectFile = (projectData: ProjectData, matcher: (normalizedPath: string) => boolean) =>
+  projectData.files.find((file) => matcher(file.path.replace(/\\/g, '/').toLowerCase()));
+
+const getProjectSpecificContext = (projectData: ProjectData, projectName: string) => {
+  const rootPath = (path: string) => withProjectRoot(projectName, path);
+  const getPath = (matcher: (normalizedPath: string) => boolean) => {
+    const file = findProjectFile(projectData, matcher);
+    return file ? rootPath(file.path) : null;
+  };
+
+  const appPath = getPath((path) => path.endsWith('src/app.tsx'));
+  const controllerPath = getPath((path) => path.endsWith('src/hooks/useappcontroller.ts'));
+  const storePath = getPath((path) => path.endsWith('src/store/projectstore.slices.ts'));
+  const insightsPath = getPath((path) => path.endsWith('src/store/projectinsights.ts'));
+  const exportsPath = getPath((path) => path.endsWith('src/store/projectexports.ts'));
+  const workerPath = getPath((path) => path.endsWith('src/workers/analysis.worker.ts'));
+  const processingPath = getPath((path) => path.endsWith('src/store/projectprocessing.ts'));
+  const graphCanvasPath = getPath((path) => path.endsWith('src/components/graphcanvas.tsx'));
+  const dbPath = getPath((path) => path.endsWith('src/db/projectdb.ts'));
+  const backendPath = getPath((path) => path.endsWith('main.py'));
+
+  const looksLikeProjectGrapher = [appPath, controllerPath, storePath, insightsPath, exportsPath, workerPath, processingPath, graphCanvasPath, dbPath, backendPath]
+    .filter(Boolean)
+    .length >= 5;
+
+  if (!looksLikeProjectGrapher) return null;
+
+  const specificSources = [
+    {
+      label: 'Orquestación principal de la app',
+      files: [appPath, controllerPath].filter(Boolean) as string[],
+      summary: 'Aquí vive el shell principal de la UI, el armado de paneles y la coordinación de acciones del usuario.'
+    },
+    {
+      label: 'Ingesta y análisis del proyecto cargado',
+      files: [processingPath, workerPath, storePath].filter(Boolean) as string[],
+      summary: 'Aquí vive la lectura de archivos, el análisis rápido del navegador y el refinamiento del grafo.'
+    },
+    {
+      label: 'Reglas de contexto y priorización',
+      files: [insightsPath, exportsPath].filter(Boolean) as string[],
+      summary: 'Aquí viven las heurísticas que deciden hotspots, task packs, semantic search, exports y handoffs.'
+    },
+    {
+      label: 'Grafo interactivo y lectura visual',
+      files: [graphCanvasPath, appPath].filter(Boolean) as string[],
+      summary: 'Aquí vive la visualización del mapa, selección de nodos y navegación por densidad o foco.'
+    },
+    {
+      label: 'Persistencia local y memoria',
+      files: [dbPath, storePath].filter(Boolean) as string[],
+      summary: 'Aquí viven snapshots locales, smart diff, memoria del proyecto y recuperación de la última corrida.'
+    },
+    {
+      label: 'Backend y enriquecimiento IA',
+      files: [backendPath, storePath].filter(Boolean) as string[],
+      summary: 'Aquí viven el análisis profundo, el proxy hacia modelos y la exportación a contexto/.'
+    }
+  ].filter((item) => item.files.length > 0);
+
+  const specificFlows = [
+    {
+      label: 'Carga e indexación del proyecto',
+      why: 'Es el flujo base del producto: toma una carpeta, filtra archivos, arma el primer grafo y prepara la corrida local.',
+      files: [processingPath, workerPath, storePath].filter(Boolean) as string[]
+    },
+    {
+      label: 'Exploración del grafo y hotspots',
+      why: 'Explica cómo el usuario navega nodos, foco, densidad y lectura estructural sin abrir todo el repo.',
+      files: [graphCanvasPath, appPath, insightsPath].filter(Boolean) as string[]
+    },
+    {
+      label: 'Exports determinísticos y handoff',
+      why: 'Aquí está el valor central de ProjectGrapher: convertir el análisis en snapshot, brief, graph guide, critical flows y otros artefactos reutilizables.',
+      files: [exportsPath, controllerPath, appPath].filter(Boolean) as string[]
+    },
+    {
+      label: 'Context packs por tarea o error',
+      why: 'Aquí vive la selección accionable: task pack, semantic search, predictive impact y error-to-context pack.',
+      files: [insightsPath, appPath, controllerPath].filter(Boolean) as string[]
+    },
+    {
+      label: 'Auditoría IA y guardado en contexto',
+      why: 'Aquí se conecta el análisis local con el backend de IA y con la persistencia de documentos exportados.',
+      files: [backendPath, controllerPath, storePath].filter(Boolean) as string[]
+    }
+  ].filter((item) => item.files.length > 0);
+
+  return {
+    sources: specificSources,
+    flows: specificFlows
+  };
+};
+
+const getSourceOfTruthCandidates = (projectData: ProjectData, projectName: string) => {
+  const specific = getProjectSpecificContext(projectData, projectName);
+  if (specific) {
+    return specific.sources;
+  }
+
+  const files = projectData.files;
+  const rootPath = (path: string) => withProjectRoot(projectName, path);
+  const rules: Array<{ label: string; matcher: (path: string, code: string, name: string) => boolean; summary: string }> = [
+    {
+      label: 'Reglas de negocio',
+      matcher: (path, code, name) => /\/utils\/|\/domain\/|\/rules\//.test(path) || /(payment|pricing|policy|rule|validator)/.test(path) || /(payment|business rule|eligib|valida)/.test(code) || /(payment|rule|validator)/.test(name),
+      summary: 'Aquí suelen vivir decisiones funcionales, validaciones y cálculo de estados.'
+    },
+    {
+      label: 'Estado global y contexto',
+      matcher: (path, code, name) => /\/contexts?\//.test(path) || /(context|provider|zustand|store)/.test(path) || /(createcontext|zustand|redux)/.test(code) || /(context|store)/.test(name),
+      summary: 'Aquí suele vivir el acceso global, la sesión y la propagación de estado.'
+    },
+    {
+      label: 'Integraciones y API',
+      matcher: (path, code, name) => /\/api\/|\/services?\//.test(path) || /(fetch|axios|graphql|endpoint|request)/.test(code) || /(api|service)/.test(name),
+      summary: 'Aquí suelen vivir llamadas externas, endpoints y capa de integración.'
+    },
+    {
+      label: 'UI y orquestación',
+      matcher: (path, code, name) => /\/components\/|\/pages\/|\/views\/|\/screens\//.test(path) || /(router|layout|app\.)/.test(name) || /(useeffect|return \(|jsx)/.test(code),
+      summary: 'Aquí suelen vivir pantallas, flujos visibles y orquestadores de interfaz.'
+    },
+    {
+      label: 'Autenticación y acceso',
+      matcher: (path, code, name) => /(auth|session|login|signin|token)/.test(path) || /(auth|session|signin|token)/.test(code) || /(auth|session)/.test(name),
+      summary: 'Aquí suele vivir el control de acceso, sesión y reglas de identidad.'
+    }
+  ];
+
+  return rules.map((rule) => {
+    const matches = files
+      .filter((file) => rule.matcher(file.path.toLowerCase(), file.content.toLowerCase(), file.name.toLowerCase()))
+      .sort((a, b) => (b.importance || 0) - (a.importance || 0))
+      .slice(0, 3)
+      .map((file) => rootPath(file.path));
+
+    return {
+      label: rule.label,
+      summary: rule.summary,
+      files: Array.from(new Set(matches))
+    };
+  }).filter((item) => item.files.length > 0);
+};
+
+const buildSourcesOfTruthBlock = (projectData: ProjectData, projectName: string) => {
+  const groups = getSourceOfTruthCandidates(projectData, projectName);
+  if (!groups.length) return '';
+
+  let text = '## Fuentes de Verdad\n';
+  text += 'Esta sección intenta separar el mapa técnico de los archivos donde probablemente viven decisiones reales del sistema.\n';
+  groups.forEach((group) => {
+    text += `- ${group.label}: ${group.files.join(', ')}\n`;
+    text += `  Nota: ${group.summary}\n`;
+  });
+  text += '\n';
+  return text;
+};
+
+const getCriticalFlowCandidates = (projectData: ProjectData, projectName: string) => {
+  const specific = getProjectSpecificContext(projectData, projectName);
+  if (specific) {
+    return specific.flows;
+  }
+
+  const rootPath = (path: string) => withProjectRoot(projectName, path);
+  const files = projectData.files;
+  const flows = [
+    {
+      label: 'Autenticación y acceso',
+      terms: ['auth', 'login', 'signin', 'session', 'token', 'guard'],
+      why: 'Conviene empezar aquí si el flujo depende de sesión, permisos o acceso global.'
+    },
+    {
+      label: 'Pagos y bloqueo funcional',
+      terms: ['payment', 'payments', 'billing', 'checkout', 'invoice', 'warning'],
+      why: 'Conviene revisar estas piezas si el negocio depende de validación, tolerancia, bloqueo o desbloqueo.'
+    },
+    {
+      label: 'Onboarding o navegación principal',
+      terms: ['router', 'route', 'layout', 'dashboard', 'home', 'app'],
+      why: 'Ayuda a reconstruir por dónde entra el usuario y cómo se mueve entre pantallas.'
+    },
+    {
+      label: 'Estado global del usuario',
+      terms: ['context', 'provider', 'store', 'zustand', 'student', 'user'],
+      why: 'Útil para detectar dónde vive la información compartida que condiciona la UI.'
+    }
+  ];
+
+  return flows.map((flow) => {
+    const matches = files
+      .filter((file) => {
+        const haystack = `${file.path} ${file.name} ${file.content.slice(0, 1000)}`.toLowerCase();
+        return flow.terms.some((term) => haystack.includes(term));
+      })
+      .sort((a, b) => (b.importance || 0) - (a.importance || 0))
+      .slice(0, 4)
+      .map((file) => rootPath(file.path));
+
+    return {
+      ...flow,
+      files: Array.from(new Set(matches))
+    };
+  }).filter((flow) => flow.files.length > 0);
+};
+
+const buildCriticalFlowsBlock = (projectData: ProjectData, projectName: string) => {
+  const flows = getCriticalFlowCandidates(projectData, projectName);
+  if (!flows.length) return '';
+
+  let text = '## Flujos Críticos\n';
+  text += 'No pretende documentar todo el negocio. Intenta marcar rutas de lectura que suelen cambiar decisiones antes de editar código.\n';
+  flows.forEach((flow) => {
+    text += `\n### ${flow.label}\n`;
+    text += `- Por qué importa: ${flow.why}\n`;
+    text += `- Archivos guía: ${flow.files.join(', ')}\n`;
+  });
+  text += '\n';
+  return text;
+};
+
 export const generateAIContextExport = (projectData: ProjectData, projectName: string) => {
   const normalizedName = projectName || 'Unknown Project';
   const rootPath = (path: string) => withProjectRoot(normalizedName, path);
@@ -169,6 +404,7 @@ export const generateAIContextExport = (projectData: ProjectData, projectName: s
   context += `Project Context: ${normalizedName}\n`;
   context += `Tech Stack: ${Array.from(stack).join(', ') || 'Standard Web/App Stack'}\n`;
   context += `Scale: ${projectData.files.length} Analyzed Modules\n\n`;
+  context += buildExportMetadataBlock(normalizedName, 'snapshot.md');
 
   context += '### PROJECT IDENTITY\n';
   context += `One-line Description: ${normalizedName} es un proyecto enfocado en ${inferredPurpose || 'análisis y visualización de arquitectura de software'}.\n`;
@@ -188,6 +424,8 @@ export const generateAIContextExport = (projectData: ProjectData, projectName: s
   context += 'Authentication: no se detectó autenticación, cuentas de usuario ni login como capacidad central del producto.\n';
   context += 'Persistence Model: la persistencia detectada es local. No afirmar almacenamiento en nube, base de datos de usuarios ni sincronización remota sin evidencia explícita.\n';
   context += 'Inference Rule: si una capacidad no aparece en archivos, rutas, dependencias o funciones detectadas, no la inventes.\n\n';
+  context += buildSourcesOfTruthBlock(projectData, normalizedName);
+  context += buildCriticalFlowsBlock(projectData, normalizedName);
 
   context += '### ESTRUCTURA DE DIRECTORIOS\n';
   context += `${generateTreeText(buildFileTree(filesWithRoot))}\n`;
@@ -295,6 +533,7 @@ export const generateProjectBriefExport = (projectData: ProjectData, projectName
   ].filter(Boolean).join(', ');
 
   let brief = `# Project Brief: ${projectName}\n\n`;
+  brief += buildExportMetadataBlock(projectName, 'brief.md');
   brief += '## Qué Hace\n';
   brief += `${projectName} parece estar diseñado para ${detectedPurpose || 'analizar código fuente y generar contexto reutilizable para agentes de programación'}.\n\n`;
   brief += '## Stack Detectado\n';
@@ -307,6 +546,8 @@ export const generateProjectBriefExport = (projectData: ProjectData, projectName
   brief += `- Relaciones detectadas: ${projectData.links.length}\n`;
   brief += `- Entry points probables: ${formatProjectPaths(projectName, entryPoints).join(', ') || 'No detectados'}\n`;
   brief += `- Hotspots principales: ${hotspotFiles.map((file) => `${file.name} [${file.importance || 0}]`).join(', ') || 'No detectados'}\n\n`;
+  brief += buildSourcesOfTruthBlock(projectData, projectName);
+  brief += buildCriticalFlowsBlock(projectData, projectName);
   brief += '## Qué Pasarle A Otro Agente\n';
   brief += `- Este proyecto usa: ${topLanguages.slice(0, 4).join(', ') || 'lenguajes no detectados con claridad'}.\n`;
   brief += `- Componentes críticos: ${hotspotFiles.slice(0, 5).map((file) => withProjectRoot(projectName, file.path)).join(', ') || 'No detectados'}.\n`;
@@ -353,6 +594,8 @@ export const generateProjectMetadataExport = (projectData: ProjectData, projectN
   return JSON.stringify({
     projectName,
     generatedBy: 'ProjectGrapher local deterministic analysis',
+    generatedAt: getGeneratedAtLabel(),
+    validityNote: 'Usa este archivo como referencia estructural y valida contra el código activo antes de cambiar reglas de negocio.',
     summary: {
       files: projectData.files.length,
       links: projectData.links.length,
@@ -366,6 +609,8 @@ export const generateProjectMetadataExport = (projectData: ProjectData, projectN
       .filter((file) => ENTRY_FILE_NAMES.includes(file.name.toLowerCase()))
       .map((file) => withProjectRoot(projectName, file.path)),
     hotspots,
+    sourcesOfTruth: getSourceOfTruthCandidates(projectData, projectName),
+    criticalFlows: getCriticalFlowCandidates(projectData, projectName),
     agentHint: {
       purpose: 'Usa este archivo para darle a otro agente una ficha técnica rápida y determinista del proyecto.',
       recommendedFiles: hotspots.slice(0, 5).map((file) => file.path)
@@ -412,6 +657,7 @@ export const generateGraphGuideExport = (projectData: ProjectData, projectName: 
   const sharedCore = ranking.filter((node) => node.incoming.length >= 2).slice(0, 12);
 
   let guide = `# Graph Guide: ${projectName}\n\n`;
+  guide += buildExportMetadataBlock(projectName, 'graph_guide.md');
   guide += '## Cómo Leer Este Archivo\n';
   guide += '- "Usa" significa que un archivo depende de otro.\n';
   guide += '- "Recibe uso de" significa que otros módulos dependen de ese archivo.\n';
@@ -420,6 +666,7 @@ export const generateGraphGuideExport = (projectData: ProjectData, projectName: 
   guide += `- Nodos: ${projectData.nodes.length}\n`;
   guide += `- Relaciones: ${projectData.links.length}\n`;
   guide += `- Módulos más conectados: ${ranking.slice(0, 8).map((node) => `${node.label} (${node.total})`).join(', ') || 'N/A'}\n\n`;
+  guide += buildSourcesOfTruthBlock(projectData, projectName);
   guide += '## Archivos Orquestadores\n';
   orchestrators.forEach((node) => {
     guide += `- ${node.label}\n`;
@@ -438,6 +685,19 @@ export const generateGraphGuideExport = (projectData: ProjectData, projectName: 
   guide += 'Empieza por los archivos orquestadores, luego revisa el núcleo compartido y por último entra a archivos hoja. Este orden reduce tokens y acelera el entendimiento del sistema.\n';
 
   return guide;
+};
+
+export const generateCriticalFlowsExport = (projectData: ProjectData, projectName: string) => {
+  let text = `# Critical Flows: ${projectName}\n\n`;
+  text += buildExportMetadataBlock(projectName, 'critical_flows.md');
+  text += '## Qué Es Este Archivo\n';
+  text += 'Documento corto para separar flujos operativos y fuentes de verdad del resto del mapa técnico.\n\n';
+  text += buildSourcesOfTruthBlock(projectData, projectName);
+  text += buildCriticalFlowsBlock(projectData, projectName);
+  text += '## Recomendación de Uso\n';
+  text += '- Léelo antes de editar si la tarea toca reglas funcionales, contexto global o integraciones.\n';
+  text += '- Cruza este archivo con snapshot y graph guide si necesitas más detalle estructural.\n';
+  return text;
 };
 
 export const generateTreeOnlyExport = (projectData: ProjectData, projectName: string) => {

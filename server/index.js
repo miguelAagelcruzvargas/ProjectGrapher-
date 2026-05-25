@@ -12,6 +12,17 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3001;
 
+const getProviderBaseUrl = (provider, customUrl) => {
+  if (provider === 'custom' && customUrl) return customUrl;
+
+  const envBaseUrl = process.env[`${provider.toUpperCase()}_BASE_URL`];
+  if (envBaseUrl) return envBaseUrl;
+  return undefined;
+};
+
+const getProviderDefaultModel = (provider) =>
+  process.env[`${provider.toUpperCase()}_MODEL`] || process.env.CUSTOM_MODEL;
+
 // Registry of Pre-configured Clients
 const getClient = (provider, customUrl, customKey) => {
   const apiKey = customKey || process.env[`${provider.toUpperCase()}_API_KEY`];
@@ -21,15 +32,7 @@ const getClient = (provider, customUrl, customKey) => {
   }
 
   // Generic OpenAI-compatible client
-  let baseURL = customUrl;
-  if (!baseURL) {
-    if (provider === 'groq') baseURL = 'https://api.groq.com/openai/v1';
-    if (provider === 'deepseek') baseURL = 'https://api.deepseek.com';
-    if (provider === 'ollama') baseURL = 'http://localhost:11434/v1';
-    if (provider === 'openai') baseURL = 'https://api.openai.com/v1';
-    if (provider === 'mistral') baseURL = 'https://api.mistral.ai/v1';
-    if (provider === 'openrouter') baseURL = 'https://openrouter.ai/api/v1';
-  }
+  const baseURL = getProviderBaseUrl(provider, customUrl);
 
   return new OpenAI({
     apiKey: apiKey || 'missing-key',
@@ -48,16 +51,21 @@ Sigue este formato Markdown... (resto del prompt)`;
 
   try {
     const client = getClient(provider, customUrl, customKey);
+    const selectedModel = model || getProviderDefaultModel(provider);
     let text = '';
 
+    if (!selectedModel) {
+      return res.status(400).json({ error: `No hay modelo configurado para ${provider}. Define ${provider.toUpperCase()}_MODEL o envía uno manualmente.` });
+    }
+
     if (provider === 'gemini') {
-      const genModel = client.getGenerativeModel({ model: model || "gemini-3-flash-preview" });
+      const genModel = client.getGenerativeModel({ model: selectedModel });
       const result = await genModel.generateContent(systemPrompt + "\n\nContexto:\n" + context);
       text = result.response.text();
     } else {
       // Handles Groq, DeepSeek, Ollama, OpenRouter, Mistral, Perplexity, etc.
       const response = await client.chat.completions.create({
-        model: model || (provider === 'ollama' ? 'llama3' : 'gpt-3.5-turbo'),
+        model: selectedModel,
         messages: [{ role: 'user', content: systemPrompt + "\n\nContexto:\n" + context }],
       });
       text = response.choices[0].message.content;

@@ -6,11 +6,10 @@ import { getExtension, findDependencies, shouldProcessFile, createProjectFileRes
 
 const getClusterName = (path: string) => {
   const parts = normalizeProjectPath(path).split('/').filter(Boolean);
-  if (parts.length <= 1) return 'root';
+  if (parts.length === 0) return 'root';
 
-  const [, ...relativeParts] = parts;
-  const primary = relativeParts[0];
-  const secondary = relativeParts[1];
+  const primary = parts[0];
+  const secondary = parts[1];
 
   if (!primary) return 'root';
   if (['src', 'server'].includes(primary) && secondary) return `${primary}/${secondary}`;

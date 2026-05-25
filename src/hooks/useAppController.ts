@@ -9,7 +9,7 @@ export function useAppController() {
     showFileModal, showIAModal,
     setProjectData, setSelectedNode, setSearchQuery, setTreeSearch,
     setActiveTab, setIsFocusMode, processFiles, loadLastProject,
-    generateAIReview, generateAIContext, generateExecutiveView, generateSystemView, generateHotspotReport, generateTaskPackData, generateTaskPack, generateErrorContextPackData, generateErrorContextPack, generateSemanticSearchResults, generateImpactAnalysisData, generateProjectBrief, generateProjectMetadata, generateGraphGuide, generateTreeOnly, setShowFileModal, setShowIAModal,
+    generateAIReview, generateAIContext, generateExecutiveView, generateSystemView, generateHotspotReport, generateTaskPackData, generateTaskPack, generateErrorContextPackData, generateErrorContextPack, generateSemanticSearchResults, generateImpactAnalysisData, generateProjectBrief, generateProjectMetadata, generateGraphGuide, generateCriticalFlows, generateTreeOnly, setShowFileModal, setShowIAModal,
     generateAIVisionDocument, generateAIArchitectureNarrative, generateAIRefactorPriorities, generateAIAgentHandoff,
     aiProvider, aiModel, customUrl, customKey, envKeys, checkEnvKeys,
     setAiProvider, setAiModel, setCustomUrl, setCustomKey, setProjectGlobalMemory, setProjectFileMemory, projectName,
@@ -29,6 +29,7 @@ export function useAppController() {
   const [isSavingAIDocs, setIsSavingAIDocs] = useState(false);
   const [aiDocsSaveStatus, setAIDocsSaveStatus] = useState<string | null>(null);
   const lastAutoSavedReviewRef = useRef<string | null>(null);
+  const lastAutoSavedContextRef = useRef<string | null>(null);
 
   useEffect(() => {
     loadLastProject();
@@ -119,6 +120,27 @@ export function useAppController() {
     generateAIAgentHandoff
   ]);
 
+  const getDeterministicContextExports = useCallback(() => {
+    if (!projectData || !projectName) return [];
+
+    return [
+      { filename: `${projectName}_snapshot.md`, content: generateAIContext() },
+      { filename: `${projectName}_brief.md`, content: generateProjectBrief() },
+      { filename: `${projectName}_project_summary.json`, content: generateProjectMetadata() },
+      { filename: `${projectName}_graph_guide.md`, content: generateGraphGuide() },
+      { filename: `${projectName}_critical_flows.md`, content: generateCriticalFlows() },
+      { filename: `${projectName}_architecture_map.json`, content: JSON.stringify(projectData, null, 2) }
+    ].filter((file) => file.content.trim().length > 0);
+  }, [
+    projectData,
+    projectName,
+    generateAIContext,
+    generateProjectBrief,
+    generateProjectMetadata,
+    generateGraphGuide,
+    generateCriticalFlows
+  ]);
+
   const saveFilesToContext = useCallback(async (files: { filename: string; content: string }[], mode: 'auto' | 'manual' = 'manual') => {
     if (!files.length) return;
 
@@ -166,6 +188,36 @@ export function useAppController() {
     void saveFilesToContext(files, 'auto');
   }, [aiReview, getAIDocumentExports, saveFilesToContext]);
 
+  useEffect(() => {
+    if (!projectData || !projectName || isProcessing) {
+      if (!projectData) {
+        lastAutoSavedContextRef.current = null;
+      }
+      return;
+    }
+
+    const snapshot = generateAIContext();
+    if (!snapshot.trim()) return;
+
+    const saveKey = `${projectName}::${snapshot}`;
+    if (lastAutoSavedContextRef.current === saveKey) {
+      return;
+    }
+
+    const files = getDeterministicContextExports();
+    if (!files.length) return;
+
+    lastAutoSavedContextRef.current = saveKey;
+    void saveFilesToContext(files, 'auto');
+  }, [
+    projectData,
+    projectName,
+    isProcessing,
+    generateAIContext,
+    getDeterministicContextExports,
+    saveFilesToContext
+  ]);
+
   const handleDownloadFile = useCallback((content: string, filename: string, type: string) => {
     const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
@@ -205,9 +257,10 @@ export function useAppController() {
   const impactAnalysisData = useMemo(() => (
     isDetailsTab && selectedNode ? generateImpactAnalysisData(selectedNode.id) : null
   ), [isDetailsTab, selectedNode, generateImpactAnalysisData]);
-  const architectureSnapshot = useMemo(() => (
-    generateAIContext()
-  ), [generateAIContext]);
+  const architectureSnapshot = useMemo(() => {
+    if (!projectData) return '';
+    return generateAIContext();
+  }, [projectData, projectName, generateAIContext]);
   const architectureSnapshotPreview = useMemo(() => (
     architectureSnapshot.split('\n').slice(0, 32).join('\n')
   ), [architectureSnapshot]);
@@ -278,6 +331,7 @@ export function useAppController() {
     generateProjectBrief,
     generateProjectMetadata,
     generateGraphGuide,
+    generateCriticalFlows,
     generateTreeOnly,
     setShowFileModal,
     setShowIAModal,
@@ -327,6 +381,8 @@ export function useAppController() {
     architectureMetrics,
     handleGraphNodeClick,
     saveFilesToContext,
+    getDeterministicContextExports,
+    getAIDocumentExports,
     handleDownloadFile,
     copyToClipboard,
     openPanelTab,

@@ -43,9 +43,24 @@ export function EmptyProjectState({
           ProjectGrapher <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-primary to-brand-secondary">AI</span>
         </h1>
 
-        <p className="mx-auto mb-10 max-w-xl text-base leading-relaxed text-gray-400 font-sans sm:text-lg lg:mb-12 lg:text-xl">
-          Analiza la arquitectura de tu proyecto localmente. Visualiza dependencias y genera prompts eficientes para tus agentes de IA.
+        <p className="mx-auto mb-6 max-w-2xl text-base leading-relaxed text-gray-400 font-sans sm:text-lg lg:text-xl">
+          Convierte tu proyecto en contexto arquitectónico utilizable antes de pedirle algo a una IA. La meta no es mandar el repo completo: es darle al agente una lectura más corta, más precisa y con menos desperdicio de tokens.
         </p>
+
+        <div className="mx-auto mb-10 grid max-w-2xl grid-cols-1 gap-3 text-left sm:grid-cols-3 lg:mb-12">
+          <div className="rounded-2xl border border-white/6 bg-black/20 px-4 py-3">
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-brand-primary">Estructura</div>
+            <div className="mt-2 text-sm text-gray-300">Cuenta archivos, dibuja relaciones y ubica hotspots reales del proyecto.</div>
+          </div>
+          <div className="rounded-2xl border border-white/6 bg-black/20 px-4 py-3">
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-brand-secondary">Prioridad</div>
+            <div className="mt-2 text-sm text-gray-300">Te dice qué revisar primero, qué puede romperse y qué contexto exportar.</div>
+          </div>
+          <div className="rounded-2xl border border-white/6 bg-black/20 px-4 py-3">
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-400">Handoff</div>
+            <div className="mt-2 text-sm text-gray-300">Genera snapshots, task packs y artefactos listos para otra sesión o para otro agente.</div>
+          </div>
+        </div>
 
         <div className="flex flex-col items-center gap-6">
           <div className="relative max-w-sm group w-full">

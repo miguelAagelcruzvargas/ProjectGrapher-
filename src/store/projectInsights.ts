@@ -1,5 +1,15 @@
 import { ProjectFile, ProjectData } from '../types';
-import { AgentTaskPackData, ErrorContextPackData, ImpactAnalysisData, ProjectInsights, SemanticSearchResult, SmartDiffData } from './projectStore.types';
+import {
+  AgentTaskPackData,
+  ErrorContextFileCandidate,
+  ErrorContextPackData,
+  ImpactAnalysisData,
+  ImpactedFile,
+  ProjectInsights,
+  SemanticSearchResult,
+  SmartDiffData,
+  TaskPackFileCandidate
+} from './projectStore.types';
 
 export const getTopItems = (items: string[], limit: number) =>
   items.filter(Boolean).slice(0, limit).join(', ') || 'N/A';

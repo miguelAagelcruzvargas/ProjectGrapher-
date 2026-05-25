@@ -2,11 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { Info, Check, Save, ShieldCheck, ShieldAlert, RefreshCw } from 'lucide-react';
 import { useProjectStore } from '../store/useProjectStore';
 import { motion } from 'motion/react';
+import { DEFAULT_AI_MODELS } from '../config/aiDefaults';
 
 export const AIConfig: React.FC = () => {
   const {
     aiProvider, aiModel, customUrl, customKey, envKeys, envKeyDetails,
-    setAiProvider, setAiModel, setCustomUrl, setCustomKey, checkEnvKeys
+    useDeepAnalysis,
+    setAiProvider, setAiModel, setCustomUrl, setCustomKey, setUseDeepAnalysis, checkEnvKeys
   } = useProjectStore();
 
   const [isSaved, setIsSaved] = useState(false);
@@ -15,15 +17,7 @@ export const AIConfig: React.FC = () => {
     void checkEnvKeys();
   }, []);
 
-  const modelMap: Record<string, string> = {
-    gemini: 'gemini-1.5-flash',
-    openai: 'gpt-4o',
-    groq: 'llama-3.3-70b-versatile',
-    deepseek: 'deepseek-chat',
-    openrouter: 'anthropic/claude-3.5-sonnet',
-    mistral: 'mistral-large-latest',
-    ollama: 'llama3'
-  };
+  const modelMap: Record<string, string> = DEFAULT_AI_MODELS;
 
   const handleSave = async () => {
     await checkEnvKeys();
@@ -183,6 +177,42 @@ export const AIConfig: React.FC = () => {
                Las llaves configuradas aquí tienen prioridad sobre las del archivo .env del servidor. No se almacenan en bases de datos externas.
             </p>
          </div>
+      </div>
+
+      <div className="space-y-4 rounded-3xl border border-cyan-500/20 bg-cyan-500/5 p-6">
+        <div className="space-y-2">
+          <span className="block text-[10px] font-bold uppercase tracking-widest text-cyan-400">Motor de Análisis</span>
+          <h4 className="text-sm font-bold text-white">Análisis profundo con backend Python</h4>
+          <p className="text-[11px] leading-relaxed text-gray-400">
+            Activa el refinamiento por backend después del grafo rápido del navegador. Mejora la detección de dependencias, pero tarda más y necesita que `main.py` esté corriendo.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setUseDeepAnalysis(!useDeepAnalysis)}
+          className={cn(
+            "flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left transition-all",
+            useDeepAnalysis
+              ? "border-cyan-400/40 bg-cyan-400/10 text-cyan-100"
+              : "border-gray-700 bg-brand-bg/70 text-gray-300"
+          )}
+        >
+          <div>
+            <div className="text-sm font-bold">{useDeepAnalysis ? 'Activado' : 'Desactivado'}</div>
+            <div className="text-[10px] uppercase tracking-[0.18em] opacity-70">
+              {useDeepAnalysis ? 'Grafo refinado por backend' : 'Solo análisis local del navegador'}
+            </div>
+          </div>
+          <div
+            className={cn(
+              "rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-widest",
+              useDeepAnalysis ? "bg-cyan-400 text-black" : "bg-gray-800 text-gray-400"
+            )}
+          >
+            {useDeepAnalysis ? 'On' : 'Off'}
+          </div>
+        </button>
       </div>
     </div>
   );

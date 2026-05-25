@@ -40,6 +40,15 @@ const yieldToBrowser = () =>
     window.setTimeout(resolve, 0);
   });
 
+const getProjectRelativePath = (rawPath: string) => {
+  const normalized = rawPath.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.length <= 1) {
+    return parts[0] || normalized;
+  }
+  return parts.slice(1).join('/');
+};
+
 type WorkerInputFile = {
   path: string;
   name: string;
@@ -72,7 +81,8 @@ export const prepareProjectFilesForWorker = async (fileList: FileList) => {
       const file = fileList.item(innerIndex);
       if (!file) continue;
 
-      const path = (file as any).webkitRelativePath || file.name;
+      const rawPath = (file as any).webkitRelativePath || file.name;
+      const path = getProjectRelativePath(rawPath);
       if (!shouldProcessFile(path, file.size)) continue;
 
       candidateFiles.push({

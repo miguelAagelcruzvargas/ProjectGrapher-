@@ -160,6 +160,7 @@ export interface ProjectState {
   generateProjectBrief: () => string;
   generateProjectMetadata: () => string;
   generateGraphGuide: () => string;
+  generateCriticalFlows: () => string;
   generateTreeOnly: () => string;
   generateAIVisionDocument: () => string;
   generateAIArchitectureNarrative: () => string;

@@ -31,10 +31,50 @@ PROVIDER_ENV_MAP = {
     "mistral": "MISTRAL_API_KEY",
 }
 
+PROVIDER_BASE_URL_ENV_MAP = {
+    "groq": "GROQ_BASE_URL",
+    "deepseek": "DEEPSEEK_BASE_URL",
+    "ollama": "OLLAMA_BASE_URL",
+    "openrouter": "OPENROUTER_BASE_URL",
+    "openai": "OPENAI_BASE_URL",
+    "mistral": "MISTRAL_BASE_URL",
+}
+
+PROVIDER_MODEL_ENV_MAP = {
+    "gemini": "GEMINI_MODEL",
+    "openai": "OPENAI_MODEL",
+    "groq": "GROQ_MODEL",
+    "deepseek": "DEEPSEEK_MODEL",
+    "ollama": "OLLAMA_MODEL",
+    "openrouter": "OPENROUTER_MODEL",
+    "mistral": "MISTRAL_MODEL",
+    "custom": "CUSTOM_MODEL",
+}
+
 
 def has_valid_api_key(env_var_name: str) -> bool:
     value = os.getenv(env_var_name, "").strip()
     return bool(value and not value.startswith("TU_"))
+
+
+def get_provider_base_url(provider: str, custom_url: Optional[str] = None) -> Optional[str]:
+    if custom_url and provider == AIProvider.CUSTOM.value:
+        return custom_url
+    env_var_name = PROVIDER_BASE_URL_ENV_MAP.get(provider)
+    if env_var_name:
+        configured_base_url = os.getenv(env_var_name, "").strip()
+        if configured_base_url:
+            return configured_base_url
+    return None
+
+
+def get_provider_default_model(provider: str) -> Optional[str]:
+    env_var_name = PROVIDER_MODEL_ENV_MAP.get(provider)
+    if env_var_name:
+        configured_model = os.getenv(env_var_name, "").strip()
+        if configured_model:
+            return configured_model
+    return None
 
 
 def get_provider_config_state() -> Dict[str, Dict[str, Any]]:
@@ -184,20 +224,17 @@ Reglas importantes para este análisis:
 
     @staticmethod
     def _get_base_url(provider: AIProvider, custom_url: Optional[str]) -> Optional[str]:
-        if custom_url and provider == AIProvider.CUSTOM: return custom_url
-        urls = {
-            AIProvider.GROQ: "https://api.groq.com/openai/v1",
-            AIProvider.DEEPSEEK: "https://api.deepseek.com",
-            AIProvider.OLLAMA: "http://localhost:11434/v1",
-            AIProvider.OPENROUTER: "https://openrouter.ai/api/v1",
-            AIProvider.OPENAI: "https://api.openai.com/v1",
-            AIProvider.MISTRAL: "https://api.mistral.ai/v1"
-        }
-        return urls.get(provider)
+        return get_provider_base_url(provider.value, custom_url)
 
     async def generate_review(self, request: AIReviewRequest) -> str:
         logger.info(f"Iniciando review con proveedor: {request.provider} y modelo: {request.model}")
         full_prompt = f"{self.SYSTEM_PROMPT}\n{request.context}"
+        selected_model = request.model or get_provider_default_model(request.provider.value)
+        if not selected_model:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No hay modelo configurado para {request.provider}. Define {PROVIDER_MODEL_ENV_MAP.get(request.provider.value, 'CUSTOM_MODEL')} o envía uno manualmente."
+            )
         
         if request.provider == AIProvider.GEMINI:
             api_key = request.customKey or os.getenv("GEMINI_API_KEY")
@@ -206,7 +243,10 @@ Reglas importantes para este análisis:
             
             client = genai.Client(api_key=api_key)
             try:
-                response = client.models.generate_content(model=request.model or "gemini-1.5-flash", contents=full_prompt)
+                response = client.models.generate_content(
+                    model=selected_model,
+                    contents=full_prompt
+                )
                 return response.text
             except HTTPException:
                 raise
@@ -227,8 +267,6 @@ Reglas importantes para este análisis:
                     raise HTTPException(status_code=401, detail=f"API Key faltante o inválida para {request.provider}")
 
         client = AsyncOpenAI(api_key=api_key or "ollama", base_url=base_url)
-        
-        selected_model = request.model or "gpt-3.5-turbo"
         try:
             logger.info(f"Enviando solicitud a {request.provider} ({base_url})")
             response = await client.chat.completions.create(
@@ -277,11 +315,19 @@ async def ai_review(request: AIReviewRequest):
 
 @app.get("/api/ai/config")
 async def get_ai_config():
-    provider_state = get_provider_config_state()
-    return {
-        "env_keys": {provider: data["configured"] for provider, data in provider_state.items()},
-        "providers": provider_state
-    }
+    try:
+        provider_state = get_provider_config_state()
+        return {
+            "env_keys": {provider: data["configured"] for provider, data in provider_state.items()},
+            "providers": provider_state
+        }
+    except Exception as e:
+        logger.error(f"Error obteniendo configuración AI: {str(e)}")
+        return {
+            "env_keys": {},
+            "providers": {},
+            "warning": "No se pudo leer la configuración AI del entorno."
+        }
 
 
 @app.post("/api/context/export")
@@ -315,5 +361,5 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    # Cambiamos al puerto 8080 para evitar conflictos WinError 10013
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+    port = int(os.getenv("PORT", "8080"))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

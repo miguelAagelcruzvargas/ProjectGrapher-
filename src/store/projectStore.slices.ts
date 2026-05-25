@@ -2,11 +2,16 @@ import type { StoreApi } from 'zustand';
 import { db } from '../db/projectDB';
 import { buildDeepAnalysisGraph, prepareProjectFilesForWorker } from './projectProcessing';
 import type { ProjectState } from './projectStore.types';
-import { generateAIContextExport, generateGraphGuideExport, generateProjectBriefExport, generateProjectMetadataExport, generateTreeOnlyExport } from './projectExports';
+import { generateAIContextExport, generateCriticalFlowsExport, generateGraphGuideExport, generateProjectBriefExport, generateProjectMetadataExport, generateTreeOnlyExport } from './projectExports';
 import { buildAIArchitectureNarrative, buildAIAgentHandoff, buildAIRefactorPriorities, buildAIVisionDocument, buildErrorContextPack, buildErrorContextPackData, buildExecutiveContext, buildHotspotReport, buildImpactAnalysisData, buildSemanticSearchResults, buildSmartDiffData, buildSystemView, buildTaskPack, buildTaskPackData, extractProjectInsights, formatProjectPaths } from './projectInsights';
+import { DEFAULT_AI_PROVIDER, getDefaultAiModel } from '../config/aiDefaults';
 
 type SetState = StoreApi<ProjectState>['setState'];
 type GetState = StoreApi<ProjectState>['getState'];
+
+let activeAnalysisRunId = 0;
+let activeAnalysisWorker: Worker | null = null;
+let activeDeepAnalysisController: AbortController | null = null;
 
 const getProjectInsights = (get: GetState) => {
   const state = get();
@@ -40,8 +45,8 @@ export const createAiSlice = (set: SetState, get: GetState) => ({
   isReviewing: false,
   aiReview: null,
   aiError: null,
-  aiProvider: 'gemini' as const,
-  aiModel: 'gemini-1.5-flash',
+  aiProvider: DEFAULT_AI_PROVIDER as ProjectState['aiProvider'],
+  aiModel: getDefaultAiModel(DEFAULT_AI_PROVIDER),
   customUrl: '',
   customKey: '',
   customKeys: {},
@@ -51,6 +56,7 @@ export const createAiSlice = (set: SetState, get: GetState) => ({
     const { customKeys } = get();
     set({
       aiProvider: provider,
+      aiModel: getDefaultAiModel(provider),
       customKey: customKeys[provider] || ''
     });
   },
@@ -214,6 +220,12 @@ export const createProjectSlice = (set: SetState, get: GetState) => ({
   },
   setUseDeepAnalysis: (mode: boolean) => set({ useDeepAnalysis: mode }),
   closeProject: async () => {
+    activeAnalysisRunId += 1;
+    activeAnalysisWorker?.terminate();
+    activeAnalysisWorker = null;
+    activeDeepAnalysisController?.abort();
+    activeDeepAnalysisController = null;
+
     set({
       projectData: null,
       projectName: '',
@@ -254,6 +266,11 @@ export const createProjectSlice = (set: SetState, get: GetState) => ({
     const { projectData } = get();
     if (!projectData || projectData.files.length === 0) return;
 
+    const runId = activeAnalysisRunId;
+    activeDeepAnalysisController?.abort();
+    const controller = new AbortController();
+    activeDeepAnalysisController = controller;
+
     set({ isProcessing: true });
     try {
       const filesToAnalyze = projectData.files.map((file) => ({
@@ -265,16 +282,29 @@ export const createProjectSlice = (set: SetState, get: GetState) => ({
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: filesToAnalyze })
+        body: JSON.stringify({ files: filesToAnalyze }),
+        signal: controller.signal
       });
 
       const data = await response.json();
+      if (runId !== activeAnalysisRunId || controller !== activeDeepAnalysisController) {
+        return;
+      }
+
       const nextGraph = buildDeepAnalysisGraph(projectData, data.analysis);
       set({ projectData: { ...projectData, nodes: nextGraph.nodes, links: nextGraph.links } });
     } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        return;
+      }
       console.error('Deep Analysis Error:', err);
     } finally {
-      set({ isProcessing: false });
+      if (controller === activeDeepAnalysisController) {
+        activeDeepAnalysisController = null;
+      }
+      if (runId === activeAnalysisRunId) {
+        set({ isProcessing: false });
+      }
     }
   },
   loadLastProject: async () => {
@@ -284,14 +314,35 @@ export const createProjectSlice = (set: SetState, get: GetState) => ({
     await get().refreshSmartDiff();
   },
   processFiles: async (fileList: FileList) => {
-    set({ isProcessing: true, projectData: null, selectedNode: null, skippedCount: 0, smartDiffData: null });
+    const runId = ++activeAnalysisRunId;
+    activeAnalysisWorker?.terminate();
+    activeAnalysisWorker = null;
+    activeDeepAnalysisController?.abort();
+    activeDeepAnalysisController = null;
+
+    set({
+      isProcessing: true,
+      projectData: null,
+      projectName: '',
+      selectedNode: null,
+      skippedCount: 0,
+      smartDiffData: null,
+      aiReview: null,
+      aiError: null
+    });
 
     if (!fileList.length) {
-      set({ isProcessing: false });
+      if (runId === activeAnalysisRunId) {
+        set({ isProcessing: false });
+      }
       return;
     }
 
     const { projectName, skippedCount, workerInput } = await prepareProjectFilesForWorker(fileList);
+    if (runId !== activeAnalysisRunId) {
+      return;
+    }
+
     if (!workerInput.length) {
       set({ isProcessing: false, projectName, skippedCount });
       return;
@@ -300,9 +351,18 @@ export const createProjectSlice = (set: SetState, get: GetState) => ({
     set({ projectName });
 
     const worker = new Worker(new URL('../workers/analysis.worker.ts', import.meta.url), { type: 'module' });
+    activeAnalysisWorker = worker;
     worker.postMessage({ files: workerInput });
 
     worker.onmessage = async (e) => {
+      if (runId !== activeAnalysisRunId) {
+        worker.terminate();
+        if (activeAnalysisWorker === worker) {
+          activeAnalysisWorker = null;
+        }
+        return;
+      }
+
       const { projectData } = e.data;
       set({ projectData, skippedCount });
 
@@ -313,14 +373,35 @@ export const createProjectSlice = (set: SetState, get: GetState) => ({
       });
 
       worker.terminate();
+      if (activeAnalysisWorker === worker) {
+        activeAnalysisWorker = null;
+      }
+
+      if (runId !== activeAnalysisRunId) {
+        return;
+      }
+
       await get().refreshSmartDiff();
-      await get().performDeepAnalysis();
+
+      if (get().useDeepAnalysis) {
+        await get().performDeepAnalysis();
+        return;
+      }
+
+      if (runId === activeAnalysisRunId) {
+        set({ isProcessing: false });
+      }
     };
 
     worker.onerror = (err) => {
       console.error('Worker Error:', err);
-      set({ isProcessing: false });
       worker.terminate();
+      if (activeAnalysisWorker === worker) {
+        activeAnalysisWorker = null;
+      }
+      if (runId === activeAnalysisRunId) {
+        set({ isProcessing: false });
+      }
     };
   },
   generateAIContext: () => {
@@ -387,6 +468,11 @@ export const createProjectSlice = (set: SetState, get: GetState) => ({
     const { projectData, projectName } = get();
     if (!projectData) return '';
     return generateGraphGuideExport(projectData, projectName || 'Unknown Project');
+  },
+  generateCriticalFlows: () => {
+    const { projectData, projectName } = get();
+    if (!projectData) return '';
+    return generateCriticalFlowsExport(projectData, projectName || 'Unknown Project');
   },
   generateTreeOnly: () => {
     const { projectData, projectName } = get();

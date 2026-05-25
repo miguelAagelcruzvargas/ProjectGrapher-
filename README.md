@@ -3,7 +3,17 @@
 
 ProjectGrapher AI es una herramienta local de inteligencia arquitectónica para desarrolladores y agentes de programación.
 
-Su objetivo no es solo convertir un repositorio en texto. Su objetivo es ayudar a una persona o a un agente de IA a entender:
+Su objetivo no es solo convertir un repositorio en texto. Su objetivo es preparar contexto suficiente para que una persona o un agente de IA no tenga que gastar miles de tokens entendiendo el proyecto desde cero.
+
+Antes de pedirle algo a un modelo, ProjectGrapher intenta responder primero:
+
+- cuántos archivos hay,
+- cómo se relacionan entre sí,
+- cuáles son los nodos importantes,
+- qué archivos conviene revisar primero,
+- y qué artefacto corto vale la pena exportar para otra sesión o para otro agente.
+
+Con eso ayuda a una persona o a un agente de IA a entender:
 
 - qué hace el proyecto,
 - cómo se conectan los archivos entre sí,
@@ -13,7 +23,10 @@ Su objetivo no es solo convertir un repositorio en texto. Su objetivo es ayudar 
 
 ## Qué Hace
 
-ProjectGrapher analiza una base de código local y construye un grafo de dependencias que puede explorarse visualmente y exportarse en varios formatos de handoff.
+ProjectGrapher analiza una base de código local, construye un grafo de dependencias y lo convierte en contexto arquitectónico utilizable antes de llamar a una IA.
+
+No intenta reemplazar al agente.
+Intenta prepararle el terreno para que no desperdicie tokens explorando el repo a ciegas.
 
 Capacidades principales:
 
@@ -49,6 +62,13 @@ Eso facilita que otro agente pueda responder preguntas como:
 - ¿De qué estado o contexto depende?
 - ¿Qué capa de API está conectada?
 - ¿Qué partes son riesgosas de modificar?
+
+La idea de fondo es simple:
+
+- menos lectura cruda del repo,
+- más estructura útil antes del prompt,
+- menos exploración innecesaria,
+- y mejor targeting de archivos antes de editar.
 
 ## Cómo Compite
 
@@ -181,6 +201,13 @@ npm run server
 
 El frontend corre en `http://localhost:3000`.
 El frontend redirige `/api` al backend de Python en `http://localhost:8080`.
+Si necesitas otro puerto, puedes definir `PORT` para el backend y `VITE_API_URL` para el frontend.
+
+## Notas Operativas
+
+- El backend principal activo es `main.py` con FastAPI.
+- `server/index.js` queda como proxy legacy y puede levantarse con `npm run server:legacy` si necesitas compararlo o mantener compatibilidad temporal.
+- Desde Configuración puedes activar o desactivar el `análisis profundo`. Si lo apagas, la app se queda solo con el análisis rápido del navegador y evita depender del backend para refinar el grafo.
 
 ## Proveedores de IA
 

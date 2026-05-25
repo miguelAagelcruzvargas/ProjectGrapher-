@@ -30,7 +30,7 @@ export default function App() {
     showFileModal, showIAModal,
     setProjectData, setSelectedNode, setSearchQuery, setTreeSearch,
     setActiveTab, setIsFocusMode, processFiles,
-    generateAIReview, generateAIContext, generateExecutiveView, generateSystemView, generateHotspotReport, generateProjectBrief, generateProjectMetadata, generateGraphGuide, generateTreeOnly, setShowFileModal, setShowIAModal,
+    generateAIReview, generateAIContext, generateExecutiveView, generateSystemView, generateHotspotReport, generateProjectBrief, generateProjectMetadata, generateGraphGuide, generateCriticalFlows, generateTreeOnly, setShowFileModal, setShowIAModal,
     generateAIVisionDocument, generateAIArchitectureNarrative, generateAIRefactorPriorities, generateAIAgentHandoff,
     aiProvider, aiModel, customUrl, customKey,
     setAiProvider, setAiModel, setCustomUrl, setCustomKey, setProjectGlobalMemory, setProjectFileMemory, projectName,
@@ -60,6 +60,8 @@ export default function App() {
     architectureMetrics,
     handleGraphNodeClick,
     saveFilesToContext,
+    getDeterministicContextExports,
+    getAIDocumentExports,
     handleDownloadFile,
     copyToClipboard,
     openPanelTab,
@@ -77,6 +79,50 @@ export default function App() {
     focusNodeByProjectPath
   } = useAppController();
   const [exportAssetTab, setExportAssetTab] = React.useState<'snapshot' | 'brief' | 'technical' | 'guide' | 'raw'>('snapshot');
+  const downloadFileBatch = React.useCallback((files: { filename: string; content: string; type: string }[]) => {
+    files.forEach((file, index) => {
+      window.setTimeout(() => {
+        handleDownloadFile(file.content, file.filename, file.type);
+      }, index * 120);
+    });
+  }, [handleDownloadFile]);
+  const exportAssetOptions = [
+    {
+      id: 'snapshot' as const,
+      label: 'Snapshot',
+      eyebrow: 'Principal',
+      accent: 'brand-primary',
+      description: 'Foto arquitectónica completa para sesiones nuevas, handoff o archivo base.'
+    },
+    {
+      id: 'brief' as const,
+      label: 'Brief',
+      eyebrow: 'Humano',
+      accent: 'sky-500',
+      description: 'Versión corta para onboarding rápido y lectura de alto nivel.'
+    },
+    {
+      id: 'technical' as const,
+      label: 'Technical JSON',
+      eyebrow: 'Scriptable',
+      accent: 'amber-500',
+      description: 'Resumen compacto para integraciones, automatización o agentes técnicos.'
+    },
+    {
+      id: 'guide' as const,
+      label: 'Graph Guide',
+      eyebrow: 'Lectura',
+      accent: 'emerald-500',
+      description: 'Guía textual para entender el mapa sin entrar al canvas.'
+    },
+    {
+      id: 'raw' as const,
+      label: 'Raw Graph',
+      eyebrow: 'Interno',
+      accent: 'brand-secondary',
+      description: 'Dump del grafo completo para depuración o reutilización avanzada.'
+    }
+  ];
 
   if (!projectData) {
     return (
@@ -376,10 +422,14 @@ export default function App() {
                         <div className="space-y-2">
                           <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Consumidores directos</div>
                           {impactAnalysisData.directDependents.length ? impactAnalysisData.directDependents.slice(0, 4).map((item) => (
-                            <div key={item.path} className="rounded-2xl border border-white/6 bg-black/20 p-3">
+                            <button
+                              key={item.path}
+                              onClick={() => focusNodeByProjectPath(item.path)}
+                              className="block w-full rounded-2xl border border-white/6 bg-black/20 p-3 text-left transition-colors hover:border-amber-500/40"
+                            >
                               <div className="break-all font-mono text-xs text-white">{item.path}</div>
                               <div className="mt-1 text-[11px] text-gray-500">{item.reasons[0]}</div>
-                            </div>
+                            </button>
                           )) : (
                             <div className="text-xs text-gray-500">No se detectaron consumidores directos.</div>
                           )}
@@ -388,10 +438,14 @@ export default function App() {
                         <div className="space-y-2">
                           <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Dependencias directas</div>
                           {impactAnalysisData.directDependencies.length ? impactAnalysisData.directDependencies.slice(0, 4).map((item) => (
-                            <div key={item.path} className="rounded-2xl border border-white/6 bg-black/20 p-3">
+                            <button
+                              key={item.path}
+                              onClick={() => focusNodeByProjectPath(item.path)}
+                              className="block w-full rounded-2xl border border-white/6 bg-black/20 p-3 text-left transition-colors hover:border-amber-500/40"
+                            >
                               <div className="break-all font-mono text-xs text-white">{item.path}</div>
                               <div className="mt-1 text-[11px] text-gray-500">{item.reasons[0]}</div>
-                            </div>
+                            </button>
                           )) : (
                             <div className="text-xs text-gray-500">No se detectaron dependencias directas.</div>
                           )}
@@ -546,7 +600,13 @@ export default function App() {
                             <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Archivos nuevos</div>
                             <div className="mt-2 space-y-1">
                               {smartDiffData.addedFiles.length ? smartDiffData.addedFiles.slice(0, 5).map((path) => (
-                                <div key={path} className="break-all font-mono text-xs text-white">{path}</div>
+                                <button
+                                  key={path}
+                                  onClick={() => focusNodeByProjectPath(path)}
+                                  className="block w-full break-all rounded-lg px-2 py-1 text-left font-mono text-xs text-white transition-colors hover:bg-white/5 hover:text-violet-200"
+                                >
+                                  {path}
+                                </button>
                               )) : <div className="text-xs text-gray-500">Sin cambios nuevos detectados.</div>}
                             </div>
                           </div>
@@ -669,15 +729,29 @@ export default function App() {
               <div className="custom-scrollbar flex-1 overflow-y-auto space-y-8 p-4 sm:p-6 lg:p-7 xl:p-8">
                 {exportSection === 'guided' && (
                 <div className="space-y-6">
-                  <div className="space-y-2">
-                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-primary">Agent Workbench</div>
-                    <h4 className="text-xl font-bold text-white font-display sm:text-2xl">Contexto preciso para programadores y agentes</h4>
-                    <p className="text-sm leading-relaxed text-gray-400">
-                      La meta es que otro agente entienda qu&eacute; hace el proyecto, d&oacute;nde vive cada parte y qu&eacute; archivos tocar para una tarea concreta, sin desperdiciar tokens.
-                    </p>
-                    <p className="text-xs font-medium text-brand-primary/90">
-                      Menos ruido, mejor contexto, decisiones m&aacute;s r&aacute;pidas.
-                    </p>
+                  <div className="flex flex-col gap-4 rounded-[2rem] border border-brand-primary/10 bg-black/15 p-4">
+                    <div className="space-y-2">
+                      <div className="text-[10px] font-black uppercase tracking-[0.24em] text-brand-primary">Agent Workbench</div>
+                      <h4 className="text-xl font-bold text-white font-display sm:text-2xl">Contexto preciso para programadores y agentes</h4>
+                      <p className="text-sm leading-relaxed text-gray-400">
+                        La meta es que otro agente entienda qu&eacute; hace el proyecto, d&oacute;nde vive cada parte y qu&eacute; archivos tocar para una tarea concreta, sin desperdiciar tokens.
+                      </p>
+                      <p className="text-xs font-medium text-brand-primary/90">
+                        Menos ruido, mejor contexto, decisiones m&aacute;s r&aacute;pidas.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => downloadFileBatch([
+                      { filename: `${projectName}_executive_view.md`, content: generateExecutiveView(), type: 'text/markdown' },
+                      { filename: `${projectName}_system_view.md`, content: generateSystemView(), type: 'text/markdown' },
+                      { filename: `${projectName}_hotspots.md`, content: generateHotspotReport(), type: 'text/markdown' },
+                      { filename: `${projectName}_critical_flows.md`, content: generateCriticalFlows(), type: 'text/markdown' }
+                    ])}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-brand-primary px-4 py-3 text-sm font-black text-black transition-all hover:brightness-110"
+                    >
+                      <Download className="h-4 w-4" />
+                      Descargar overview completo
+                    </button>
                   </div>
 
                   <div className="space-y-3">
@@ -713,6 +787,17 @@ export default function App() {
                       </div>
                       <span className="shrink-0 text-sm font-bold text-amber-400">Descargar</span>
                     </button>
+
+                    <button
+                      onClick={() => handleDownloadFile(generateCriticalFlows(), `${projectName}_critical_flows.md`, 'text/markdown')}
+                      className="flex w-full items-center justify-between rounded-2xl border border-gray-800 bg-brand-bg/30 px-4 py-3 text-left transition-colors hover:border-emerald-500/40"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-sm font-bold text-white">Critical Flows</div>
+                        <div className="text-xs text-gray-500">Fuentes de verdad y rutas operativas del negocio</div>
+                      </div>
+                      <span className="shrink-0 text-sm font-bold text-emerald-400">Descargar</span>
+                    </button>
                   </div>
                 </div>
                 )}
@@ -732,11 +817,25 @@ export default function App() {
                         <p className="text-xs leading-relaxed text-gray-300">
                           Cuando se genera la auditor&iacute;a IA, estos archivos tambi&eacute;n se guardan autom&aacute;ticamente en <span className="font-mono text-fuchsia-300">contexto/{projectName || 'Proyecto'}</span>.
                         </p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <button
+                          onClick={() => downloadFileBatch(
+                            getAIDocumentExports().map((file) => ({
+                              ...file,
+                              type: 'text/markdown'
+                            }))
+                          )}
+                          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-fuchsia-500/20 bg-fuchsia-500/10 px-4 py-3 text-sm font-bold text-fuchsia-200 transition-all hover:bg-fuchsia-500 hover:text-black"
+                        >
+                          <Download className="h-4 w-4" />
+                          Descargar todo
+                        </button>
                         <button
                           onClick={() => void saveFilesToContext(getAIDocumentExports(), 'manual')}
                           disabled={isSavingAIDocs}
                           className={cn(
-                            "rounded-2xl px-4 py-2 text-xs font-bold transition-all",
+                            "rounded-2xl px-4 py-3 text-sm font-bold transition-all",
                             isSavingAIDocs ? "bg-gray-800 text-gray-500" : "bg-fuchsia-500 text-black hover:brightness-110"
                           )}
                         >
@@ -838,7 +937,11 @@ export default function App() {
                           <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Archivos primarios</div>
                           <div className="space-y-2">
                             {taskPackData.primaryFiles.slice(0, 5).map((file) => (
-                              <div key={file.path} className="rounded-xl border border-white/6 bg-white/[0.03] p-3">
+                              <button
+                                key={file.path}
+                                onClick={() => focusNodeByProjectPath(file.path)}
+                                className="block w-full rounded-xl border border-white/6 bg-white/[0.03] p-3 text-left transition-colors hover:border-emerald-500/40"
+                              >
                                 <div className="break-all font-mono text-xs text-white">{file.path}</div>
                                 <div className="mt-1 text-[11px] text-gray-400">Impacto: {file.importance} · Score: {file.score}</div>
                                 <div className="mt-2 space-y-1">
@@ -846,7 +949,7 @@ export default function App() {
                                     <div key={reason} className="text-[11px] text-gray-500">- {reason}</div>
                                   ))}
                                 </div>
-                              </div>
+                              </button>
                             ))}
                           </div>
                         </div>
@@ -855,10 +958,14 @@ export default function App() {
                           <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Archivos relacionados</div>
                           <div className="space-y-2">
                             {taskPackData.relatedFiles.slice(0, 4).map((file) => (
-                              <div key={file.path} className="rounded-xl border border-white/6 bg-white/[0.03] p-3">
+                              <button
+                                key={file.path}
+                                onClick={() => focusNodeByProjectPath(file.path)}
+                                className="block w-full rounded-xl border border-white/6 bg-white/[0.03] p-3 text-left transition-colors hover:border-emerald-500/40"
+                              >
                                 <div className="break-all font-mono text-xs text-white">{file.path}</div>
                                 <div className="mt-1 text-[11px] text-gray-500">{file.reasons[0]}</div>
-                              </div>
+                              </button>
                             ))}
                             {!taskPackData.relatedFiles.length && (
                               <div className="text-xs text-gray-500">No se detectaron relacionados claros en el subgrafo inicial.</div>
@@ -948,7 +1055,10 @@ export default function App() {
                         <div className="space-y-2">
                           <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Origen probable</div>
                           {errorContextPackData.probableOrigin ? (
-                            <div className="rounded-xl border border-white/6 bg-white/[0.03] p-3">
+                            <button
+                              onClick={() => focusNodeByProjectPath(errorContextPackData.probableOrigin!.path)}
+                              className="block w-full rounded-xl border border-white/6 bg-white/[0.03] p-3 text-left transition-colors hover:border-rose-500/40"
+                            >
                               <div className="break-all font-mono text-xs text-white">{errorContextPackData.probableOrigin.path}</div>
                               <div className="mt-1 text-[11px] text-gray-400">Impacto: {errorContextPackData.probableOrigin.importance} · Score: {errorContextPackData.probableOrigin.score}</div>
                               <div className="mt-2 space-y-1">
@@ -956,7 +1066,7 @@ export default function App() {
                                   <div key={reason} className="text-[11px] text-gray-500">- {reason}</div>
                                 ))}
                               </div>
-                            </div>
+                            </button>
                           ) : (
                             <div className="text-xs text-gray-500">No se detectó un origen con alta confianza.</div>
                           )}
@@ -966,10 +1076,14 @@ export default function App() {
                           <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Vecinos relevantes</div>
                           <div className="space-y-2">
                             {errorContextPackData.relatedFiles.slice(0, 5).map((file) => (
-                              <div key={file.path} className="rounded-xl border border-white/6 bg-white/[0.03] p-3">
+                              <button
+                                key={file.path}
+                                onClick={() => focusNodeByProjectPath(file.path)}
+                                className="block w-full rounded-xl border border-white/6 bg-white/[0.03] p-3 text-left transition-colors hover:border-rose-500/40"
+                              >
                                 <div className="break-all font-mono text-xs text-white">{file.path}</div>
                                 <div className="mt-1 text-[11px] text-gray-500">{file.reasons[0]}</div>
-                              </div>
+                              </button>
                             ))}
                             {!errorContextPackData.relatedFiles.length && (
                               <div className="text-xs text-gray-500">No se detectaron vecinos claros a partir del nodo origen.</div>
@@ -1005,88 +1119,151 @@ export default function App() {
 
                 {exportSection === 'exports' && (
                 <>
-                <div className="space-y-3 rounded-3xl border border-white/6 bg-black/20 p-4">
+                <div className="space-y-4 rounded-3xl border border-white/6 bg-black/20 p-4">
                   <div className="text-[10px] font-black uppercase tracking-[0.22em] text-sky-400">Centro de Exportacion</div>
                   <p className="text-sm leading-relaxed text-gray-400">
                     Exportes determinísticos para trabajar solo con tu proyecto local. La idea aquí no es depender de IA, sino darte salidas claras para leer, compartir o automatizar sin adivinar qué hace cada botón.
                   </p>
+                  <button
+                    onClick={() => downloadFileBatch([
+                      { filename: `${projectName}_snapshot.md`, content: architectureSnapshot, type: 'text/markdown' },
+                      { filename: `${projectName}_brief.md`, content: generateProjectBrief(), type: 'text/markdown' },
+                      { filename: `${projectName}_project_summary.json`, content: generateProjectMetadata(), type: 'application/json' },
+                      { filename: `${projectName}_graph_guide.md`, content: generateGraphGuide(), type: 'text/markdown' },
+                      { filename: `${projectName}_critical_flows.md`, content: generateCriticalFlows(), type: 'text/markdown' },
+                      { filename: `${projectName}_architecture_map.json`, content: JSON.stringify(projectData, null, 2), type: 'application/json' }
+                    ])}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-sky-500 px-4 py-3 text-sm font-black text-black transition-all hover:brightness-110"
+                  >
+                    <Download className="h-4 w-4" />
+                    Descargar todo el paquete base
+                  </button>
                 </div>
 
                 <div className="space-y-4">
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={() => setExportAssetTab('snapshot')}
-                      className={cn(
-                        "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
-                        exportAssetTab === 'snapshot' ? "border-brand-primary bg-brand-primary text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-brand-primary/40 hover:text-white"
-                      )}
-                    >
-                      Snapshot
-                    </button>
-                    <button
-                      onClick={() => setExportAssetTab('brief')}
-                      className={cn(
-                        "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
-                        exportAssetTab === 'brief' ? "border-sky-500 bg-sky-500 text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-sky-500/40 hover:text-white"
-                      )}
-                    >
-                      Brief
-                    </button>
-                    <button
-                      onClick={() => setExportAssetTab('technical')}
-                      className={cn(
-                        "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
-                        exportAssetTab === 'technical' ? "border-amber-500 bg-amber-500 text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-amber-500/40 hover:text-white"
-                      )}
-                    >
-                      Technical JSON
-                    </button>
-                    <button
-                      onClick={() => setExportAssetTab('guide')}
-                      className={cn(
-                        "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
-                        exportAssetTab === 'guide' ? "border-emerald-500 bg-emerald-500 text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-emerald-500/40 hover:text-white"
-                      )}
-                    >
-                      Graph Guide
-                    </button>
-                    <button
-                      onClick={() => setExportAssetTab('raw')}
-                      className={cn(
-                        "rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
-                        exportAssetTab === 'raw' ? "border-brand-secondary bg-brand-secondary text-black" : "border-gray-800 bg-black/20 text-gray-400 hover:border-brand-secondary/40 hover:text-white"
-                      )}
-                    >
-                      Raw Graph
-                    </button>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                    {exportAssetOptions.map((option) => {
+                      const isActive = exportAssetTab === option.id;
+                      return (
+                        <button
+                          key={option.id}
+                          onClick={() => setExportAssetTab(option.id)}
+                          className={cn(
+                            "group relative overflow-hidden rounded-[1.6rem] border p-4 text-left transition-all duration-300",
+                            isActive
+                              ? option.id === 'snapshot'
+                                ? "border-brand-primary/35 bg-brand-primary/[0.08] shadow-[0_0_0_1px_rgba(99,102,241,0.15)]"
+                                : option.id === 'brief'
+                                  ? "border-sky-500/35 bg-sky-500/[0.08] shadow-[0_0_0_1px_rgba(14,165,233,0.15)]"
+                                  : option.id === 'technical'
+                                    ? "border-amber-500/35 bg-amber-500/[0.08] shadow-[0_0_0_1px_rgba(245,158,11,0.15)]"
+                                    : option.id === 'guide'
+                                      ? "border-emerald-500/35 bg-emerald-500/[0.08] shadow-[0_0_0_1px_rgba(16,185,129,0.15)]"
+                                      : "border-brand-secondary/35 bg-brand-secondary/[0.08] shadow-[0_0_0_1px_rgba(16,185,129,0.15)]"
+                              : "border-white/6 bg-black/20 hover:border-white/15 hover:bg-white/[0.03]"
+                          )}
+                        >
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="space-y-2">
+                              <div className={cn(
+                                "text-[10px] font-black uppercase tracking-[0.22em]",
+                                isActive
+                                  ? option.id === 'snapshot'
+                                    ? "text-brand-primary"
+                                    : option.id === 'brief'
+                                      ? "text-sky-400"
+                                      : option.id === 'technical'
+                                        ? "text-amber-400"
+                                        : option.id === 'guide'
+                                          ? "text-emerald-400"
+                                          : "text-brand-secondary"
+                                  : "text-gray-500"
+                              )}>
+                                {option.eyebrow}
+                              </div>
+                              <div className="text-sm font-bold text-white">{option.label}</div>
+                              <p className="text-xs leading-relaxed text-gray-400">{option.description}</p>
+                            </div>
+                            <div className={cn(
+                              "rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.18em] transition-all",
+                              isActive
+                                ? option.id === 'snapshot'
+                                  ? "border-brand-primary/30 bg-brand-primary text-black"
+                                  : option.id === 'brief'
+                                    ? "border-sky-500/30 bg-sky-500 text-black"
+                                    : option.id === 'technical'
+                                      ? "border-amber-500/30 bg-amber-500 text-black"
+                                      : option.id === 'guide'
+                                        ? "border-emerald-500/30 bg-emerald-500 text-black"
+                                        : "border-brand-secondary/30 bg-brand-secondary text-black"
+                                : "border-white/8 bg-black/30 text-gray-500 group-hover:text-gray-300"
+                            )}>
+                              {isActive ? 'Activo' : 'Abrir'}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
 
                   {exportAssetTab === 'snapshot' && (
                     <div className="space-y-4">
-                      <div className="rounded-[2rem] border border-brand-primary/20 bg-brand-primary/[0.06] p-5 sm:p-6">
-                        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="overflow-hidden rounded-[2rem] border border-brand-primary/20 bg-[linear-gradient(145deg,rgba(99,102,241,0.15),rgba(3,7,18,0.92)_55%)] p-5 sm:p-6">
+                        <div className="flex flex-col gap-5">
                           <div className="flex items-start gap-4">
-                            <div className="rounded-2xl bg-brand-primary/10 p-4">
+                            <div className="rounded-[1.4rem] border border-brand-primary/20 bg-brand-primary/10 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
                               <Database className="h-6 w-6 text-brand-primary" />
                             </div>
                             <div className="space-y-2">
                               <div>
-                                <h4 className="text-white font-bold">Snapshot Arquitectónico</h4>
-                                <p className="text-xs text-gray-400">El export principal. Resume estructura, hotspots, stack, relaciones y contexto útil del proyecto.</p>
+                                <div className="mb-2 text-[10px] font-black uppercase tracking-[0.24em] text-brand-primary">Export principal</div>
+                                <h4 className="text-xl font-bold text-white">Snapshot Arquitectónico</h4>
+                                <p className="mt-2 max-w-xl text-sm leading-relaxed text-gray-300">Resume estructura, hotspots, stack, relaciones y contexto útil del proyecto en un solo artefacto base.</p>
                               </div>
-                              <div className="text-[11px] leading-relaxed text-gray-500">
+                              <div className="max-w-xl text-[12px] leading-relaxed text-gray-400">
                                 Úsalo cuando quieras pasarle el proyecto a otra persona, abrir una nueva sesión o guardar una foto técnica del estado actual sin depender de una auditoría IA.
                               </div>
                             </div>
                           </div>
-                        <button
-                          onClick={() => handleDownloadFile(architectureSnapshot, `${projectName}_snapshot.md`, 'text/markdown')}
-                          className="inline-flex max-w-full self-start sm:self-center items-center justify-center gap-2 rounded-xl border border-brand-primary/30 bg-brand-primary/10 px-3 py-2 text-xs font-bold text-brand-primary transition-all hover:bg-brand-primary hover:text-white"
-                        >
-                          <Download className="h-3.5 w-3.5 shrink-0" />
-                          Descargar
-                        </button>
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="rounded-full border border-brand-primary/20 bg-black/25 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-brand-primary">
+                              Markdown base
+                            </div>
+                            <button
+                              onClick={() => handleDownloadFile(architectureSnapshot, `${projectName}_snapshot.md`, 'text/markdown')}
+                              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-brand-primary px-4 py-3 text-sm font-black text-black transition-all hover:brightness-110 sm:w-auto"
+                            >
+                              <Download className="h-4 w-4 shrink-0" />
+                              Descargar snapshot
+                            </button>
+                          </div>
                         </div>
+                        <div className="mt-5 space-y-4 rounded-[1.8rem] border border-white/6 bg-black/25 p-4">
+                          <div className="space-y-2">
+                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-gray-500">Persistencia local</div>
+                            <p className="text-sm leading-relaxed text-gray-300">
+                              Guarda tambi&eacute;n snapshot, brief, graph guide y JSON t&eacute;cnico en <span className="break-all font-mono text-brand-primary">contexto/{projectName || 'Proyecto'}</span>.
+                            </p>
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            <button
+                              onClick={() => void saveFilesToContext(getDeterministicContextExports(), 'manual')}
+                              disabled={isSavingAIDocs}
+                              className={cn(
+                                "inline-flex w-full items-center justify-center rounded-[1.4rem] px-4 py-3 text-sm font-black transition-all",
+                                isSavingAIDocs
+                                  ? "bg-gray-800 text-gray-500"
+                                  : "bg-white text-black hover:bg-brand-primary hover:text-black"
+                              )}
+                            >
+                              {isSavingAIDocs ? 'Guardando exportes...' : 'Guardar paquete base'}
+                            </button>
+                            <div className="text-[11px] leading-relaxed text-gray-500">Incluye 6 artefactos determinísticos: snapshot, brief, graph guide, critical flows y JSON técnico.</div>
+                          </div>
+                        </div>
+                        {aiDocsSaveStatus && (
+                          <div className="mt-3 rounded-2xl border border-brand-primary/15 bg-brand-primary/[0.08] px-4 py-3 text-[11px] leading-relaxed text-brand-primary/90">{aiDocsSaveStatus}</div>
+                        )}
                       </div>
 
                       <div className="space-y-4 pt-1">
@@ -1123,112 +1300,134 @@ export default function App() {
 
                   {exportAssetTab === 'brief' && (
                     <div className="rounded-[2rem] border border-sky-500/20 bg-sky-500/[0.05] p-5 sm:p-6">
-                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="flex items-start gap-4">
-                          <div className="rounded-2xl bg-sky-500/10 p-4">
-                            <FileText className="h-6 w-6 text-sky-400" />
-                          </div>
-                          <div className="space-y-2">
-                            <div>
-                              <h4 className="text-white font-bold">Project Brief</h4>
-                              <p className="text-xs text-gray-400">Versión corta para humanos.</p>
+                      <div className="space-y-5">
+                        <div className="flex flex-col gap-4">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="flex min-w-0 items-start gap-4">
+                              <div className="rounded-2xl bg-sky-500/10 p-4">
+                                <FileText className="h-6 w-6 text-sky-400" />
+                              </div>
+                              <div className="min-w-0">
+                                <h4 className="text-white font-bold">Project Brief</h4>
+                                <p className="mt-1 text-sm text-gray-400">Versión corta para humanos.</p>
+                              </div>
                             </div>
-                            <div className="text-[11px] leading-relaxed text-gray-500">
-                              Bueno para ubicarse rápido: qué hace el proyecto, qué stack usa y por dónde empezar. Es el archivo más simple para onboarding.
-                            </div>
+                            <button
+                              onClick={() => handleDownloadFile(generateProjectBrief(), `${projectName}_brief.md`, 'text/markdown')}
+                              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-2xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm font-bold text-sky-300 transition-all hover:bg-sky-500 hover:text-black"
+                            >
+                              <Download className="h-4 w-4" />
+                              Descargar
+                            </button>
                           </div>
                         </div>
-                        <button
-                          onClick={() => handleDownloadFile(generateProjectBrief(), `${projectName}_brief.md`, 'text/markdown')}
-                          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm font-bold text-sky-300 transition-all hover:bg-sky-500 hover:text-black"
-                        >
-                          <Download className="h-4 w-4" />
-                          Descargar
-                        </button>
+                        <div className="rounded-[1.6rem] border border-white/6 bg-black/20 p-4">
+                          <div className="max-w-none space-y-3">
+                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-sky-400">Resumen</div>
+                            <p className="text-sm leading-relaxed text-gray-300">
+                              Bueno para ubicarse rápido: qué hace el proyecto, qué stack usa y por dónde empezar. Es el archivo más simple para onboarding.
+                            </p>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}
 
                   {exportAssetTab === 'technical' && (
                     <div className="rounded-[2rem] border border-amber-500/20 bg-amber-500/[0.05] p-5 sm:p-6">
-                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="flex items-start gap-4">
-                          <div className="rounded-2xl bg-amber-500/10 p-4">
-                            <Activity className="h-6 w-6 text-amber-400" />
-                          </div>
-                          <div className="space-y-2">
-                            <div>
+                      <div className="space-y-5">
+                        <div className="flex flex-col gap-4">
+                          <div className="flex items-start gap-4">
+                            <div className="rounded-2xl bg-amber-500/10 p-4">
+                              <Activity className="h-6 w-6 text-amber-400" />
+                            </div>
+                            <div className="min-w-0 flex-1">
                               <h4 className="text-white font-bold">Technical Summary JSON</h4>
-                              <p className="text-xs text-gray-400">Ficha compacta y determinista.</p>
+                              <p className="mt-1 text-sm text-gray-400">Ficha compacta y determinista.</p>
                             </div>
-                            <div className="text-[11px] leading-relaxed text-gray-500">
+                          </div>
+                          <button
+                            onClick={() => handleDownloadFile(generateProjectMetadata(), `${projectName}_project_summary.json`, 'application/json')}
+                            className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm font-bold text-amber-300 transition-all hover:bg-amber-500 hover:text-black"
+                          >
+                            <Download className="h-4 w-4" />
+                            Descargar
+                          </button>
+                        </div>
+                        <div className="rounded-[1.6rem] border border-white/6 bg-black/20 p-4">
+                          <div className="max-w-none space-y-3">
+                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-amber-400">Uso técnico</div>
+                            <p className="text-sm leading-relaxed text-gray-300">
                               Sirve para scripts, integraciones futuras o agentes que necesitan estructura clara sin leer markdown largo.
-                            </div>
+                            </p>
                           </div>
                         </div>
-                        <button
-                          onClick={() => handleDownloadFile(generateProjectMetadata(), `${projectName}_project_summary.json`, 'application/json')}
-                          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm font-bold text-amber-300 transition-all hover:bg-amber-500 hover:text-black"
-                        >
-                          <Download className="h-4 w-4" />
-                          Descargar
-                        </button>
                       </div>
                     </div>
                   )}
 
                   {exportAssetTab === 'guide' && (
                     <div className="rounded-[2rem] border border-emerald-500/20 bg-emerald-500/[0.05] p-5 sm:p-6">
-                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="flex items-start gap-4">
-                          <div className="rounded-2xl bg-emerald-500/10 p-4">
-                            <Share2 className="h-6 w-6 text-emerald-400" />
-                          </div>
-                          <div className="space-y-2">
-                            <div>
+                      <div className="space-y-5">
+                        <div className="flex flex-col gap-4">
+                          <div className="flex items-start gap-4">
+                            <div className="rounded-2xl bg-emerald-500/10 p-4">
+                              <Share2 className="h-6 w-6 text-emerald-400" />
+                            </div>
+                            <div className="min-w-0 flex-1">
                               <h4 className="text-white font-bold">Graph Guide</h4>
-                              <p className="text-xs text-gray-400">Guía textual para leer el grafo.</p>
+                              <p className="mt-1 text-sm text-gray-400">Guía textual para leer el grafo.</p>
                             </div>
-                            <div className="text-[11px] leading-relaxed text-gray-500">
+                          </div>
+                          <button
+                            onClick={() => handleDownloadFile(generateGraphGuide(), `${projectName}_graph_guide.md`, 'text/markdown')}
+                            className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-bold text-emerald-300 transition-all hover:bg-emerald-500 hover:text-black"
+                          >
+                            <Download className="h-4 w-4" />
+                            Descargar
+                          </button>
+                        </div>
+                        <div className="rounded-[1.6rem] border border-white/6 bg-black/20 p-4">
+                          <div className="max-w-none space-y-3">
+                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-emerald-400">Lectura del mapa</div>
+                            <p className="text-sm leading-relaxed text-gray-300">
                               Úsalo si quieres entender orquestadores, núcleo compartido y orden de lectura del mapa sin abrir el canvas.
-                            </div>
+                            </p>
                           </div>
                         </div>
-                        <button
-                          onClick={() => handleDownloadFile(generateGraphGuide(), `${projectName}_graph_guide.md`, 'text/markdown')}
-                          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-bold text-emerald-300 transition-all hover:bg-emerald-500 hover:text-black"
-                        >
-                          <Download className="h-4 w-4" />
-                          Descargar
-                        </button>
                       </div>
                     </div>
                   )}
 
                   {exportAssetTab === 'raw' && (
                     <div className="rounded-[2rem] border border-brand-secondary/20 bg-brand-secondary/[0.05] p-5 sm:p-6">
-                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="flex items-start gap-4">
-                          <div className="rounded-2xl bg-brand-secondary/10 p-4">
-                            <Network className="h-6 w-6 text-brand-secondary" />
-                          </div>
-                          <div className="space-y-2">
-                            <div>
+                      <div className="space-y-5">
+                        <div className="flex flex-col gap-4">
+                          <div className="flex items-start gap-4">
+                            <div className="rounded-2xl bg-brand-secondary/10 p-4">
+                              <Network className="h-6 w-6 text-brand-secondary" />
+                            </div>
+                            <div className="min-w-0 flex-1">
                               <h4 className="text-white font-bold">Raw Graph JSON</h4>
-                              <p className="text-xs text-gray-400">Dump técnico del grafo completo.</p>
+                              <p className="mt-1 text-sm text-gray-400">Dump técnico del grafo completo.</p>
                             </div>
-                            <div className="text-[11px] leading-relaxed text-gray-500">
+                          </div>
+                          <button
+                            onClick={() => handleDownloadFile(JSON.stringify(projectData, null, 2), `${projectName}_architecture_map.json`, 'application/json')}
+                            className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-brand-secondary/30 bg-brand-secondary/10 px-4 py-3 text-sm font-bold text-brand-secondary transition-all hover:bg-brand-secondary hover:text-black"
+                          >
+                            <Download className="h-4 w-4" />
+                            Descargar
+                          </button>
+                        </div>
+                        <div className="rounded-[1.6rem] border border-white/6 bg-black/20 p-4">
+                          <div className="max-w-none space-y-3">
+                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-brand-secondary">Capa interna</div>
+                            <p className="text-sm leading-relaxed text-gray-300">
                               Esto ya es más interno: útil para depurar, reusar datos o construir otra vista encima del grafo.
-                            </div>
+                            </p>
                           </div>
                         </div>
-                        <button
-                          onClick={() => handleDownloadFile(JSON.stringify(projectData, null, 2), `${projectName}_architecture_map.json`, 'application/json')}
-                          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-brand-secondary/30 bg-brand-secondary/10 px-4 py-3 text-sm font-bold text-brand-secondary transition-all hover:bg-brand-secondary hover:text-black"
-                        >
-                          <Download className="h-4 w-4" />
-                          Descargar
-                        </button>
                       </div>
                     </div>
                   )}
